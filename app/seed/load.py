@@ -6,11 +6,13 @@ import argparse
 import os
 from pathlib import Path
 
+from app.env import load_env
 from app.infrastructure.db import open_database
 from app.seed.fixtures import load_reference_data
 
 
 def main() -> None:
+    load_env()
     parser = argparse.ArgumentParser(description="Load reference seed data.")
     parser.add_argument(
         "--database",

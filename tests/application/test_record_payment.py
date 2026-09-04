@@ -331,3 +331,140 @@ def test_eob_uses_existing_decisions_and_does_not_readjudicate(
     )
     assert len(eob.payments) == 1
     assert eob.payments[0].amount_minor == 4_000
+
+
+def test_overpaid_claim_ledger_allows_subsequent_claim_on_same_benefit(
+    db: SqliteDatabase,
+) -> None:
+    """After appeal reduces payable below paid, ledger reflects current adjudication for limit checks."""
+    from app.domain.accumulators import AccumulatorKey, AccumulatorScope
+    from app.domain.states import LineOutcome
+
+    _seed(db, limit=6_000)
+    submit_claim(
+        db,
+        Claim(
+            id="c1",
+            member_id="m1",
+            submitted_at=datetime(2026, 3, 20, 10, 0),
+            lines=(
+                ClaimLine(
+                    id="c1-L1",
+                    claim_id="c1",
+                    line_number=1,
+                    provider_id="prov1",
+                    service_code="PHYSIO-30",
+                    service_date=date(2026, 3, 15),
+                    billed_amount=Money(5_000),
+                    diagnosis_code="M54.5",
+                ),
+                ClaimLine(
+                    id="c1-L2",
+                    claim_id="c1",
+                    line_number=2,
+                    provider_id="prov1",
+                    service_code="PHYSIO-30",
+                    service_date=date(2026, 3, 16),
+                    billed_amount=Money(5_000),
+                    diagnosis_code="M54.5",
+                ),
+            ),
+        ),
+    )
+    record_payment(db, claim_id="c1", amount=Money(6_000), reference="pay1")
+    assert get_claim(db, "c1").settlement_state == SettlementState.SETTLED.value
+
+    file_dispute(db, claim_id="c1", line_number=2, member_reason="wrong code")
+    resolve_review(
+        db,
+        line_id="c1-L2",
+        mode=ReviewResolutionMode.CORRECT_FACTS,
+        reviewer_id="rev1",
+        note="excluded",
+        corrections=LineFactCorrections(service_code="COSMETIC-1"),
+    )
+    overpaid = get_claim(db, "c1")
+    assert overpaid.settlement_state == SettlementState.OVERPAID.value
+    assert overpaid.payable_minor == 4_000
+    paid_total = sum(p.amount.minor_units for p in db.payments.list_for_claim("c1"))
+    assert paid_total == 6_000
+
+    amount_key = AccumulatorKey(
+        member_id="m1",
+        plan_year=2026,
+        scope=AccumulatorScope.BENEFIT_AMOUNT,
+        benefit_code="PHYSIO",
+    )
+    assert db.accumulators.balance(amount_key) == 4_000
+
+    result = submit_claim(
+        db,
+        Claim(
+            id="c2",
+            member_id="m1",
+            submitted_at=datetime(2026, 3, 25, 10, 0),
+            lines=(
+                ClaimLine(
+                    id="c2-L1",
+                    claim_id="c2",
+                    line_number=1,
+                    provider_id="prov1",
+                    service_code="PHYSIO-30",
+                    service_date=date(2026, 3, 20),
+                    billed_amount=Money(5_000),
+                    diagnosis_code="M54.5",
+                ),
+            ),
+        ),
+    )
+    assert result.line_decisions[0].outcome is LineOutcome.PARTIALLY_APPROVED
+    assert result.payable == Money(2_000)
+    assert db.accumulators.balance(amount_key) == 6_000
+
+
+def test_all_lines_needs_review_blocks_payment_with_nothing_due(
+    db: SqliteDatabase,
+) -> None:
+    _seed(db)
+    submit_claim(
+        db,
+        Claim(
+            id="review-all",
+            member_id="m1",
+            submitted_at=datetime(2026, 3, 20, 10, 0),
+            lines=(
+                ClaimLine(
+                    id="review-all-L1",
+                    claim_id="review-all",
+                    line_number=1,
+                    provider_id="prov1",
+                    service_code="NOT-IN-CATALOG",
+                    service_date=date(2026, 3, 15),
+                    billed_amount=Money(1_000),
+                    diagnosis_code="M54.5",
+                ),
+                ClaimLine(
+                    id="review-all-L2",
+                    claim_id="review-all",
+                    line_number=2,
+                    provider_id="prov1",
+                    service_code="NOT-IN-CATALOG",
+                    service_date=date(2026, 3, 16),
+                    billed_amount=Money(2_000),
+                    diagnosis_code="M54.5",
+                ),
+            ),
+        ),
+    )
+    view = get_claim(db, "review-all")
+    assert view.adjudication_state == ClaimAdjudicationState.UNDER_REVIEW.value
+    assert view.payable_minor == 0
+    assert view.settlement_state == SettlementState.NOTHING_DUE.value
+
+    with pytest.raises(PaymentWhileUnderReviewError):
+        record_payment(
+            db,
+            claim_id="review-all",
+            amount=Money(1),
+            reference="should-fail",
+        )

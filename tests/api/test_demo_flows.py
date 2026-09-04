@@ -159,27 +159,119 @@ def test_demo_flow_2_mixed_claim_partial_approval_and_review(
     assert "mixed-1" in claim_ids
 
 
-def test_demo_flow_3_denied_line_is_visible_for_future_dispute(
-    client: TestClient,
-) -> None:
-    """Appealable denial is returned intact; dispute endpoints are not in scope yet."""
-    response = client.post(
+def test_demo_flow_3_dispute_resolve_pay_and_eob(client: TestClient) -> None:
+    """Denied line → dispute → fact correction → payment → EOB and accumulators."""
+    # Burn most of the seeded ₹100 deductible so the appealed physio line pays out.
+    setup = client.post(
+        "/claims",
+        json=_submit_body(
+            claim_id="dispute-setup-prior",
+            lines=[
+                _line(line_number=1, service_date="2026-03-01"),
+                _line(line_number=2, service_date="2026-03-02"),
+            ],
+        ),
+    )
+    assert setup.status_code == 201
+
+    submit = client.post(
         "/claims",
         json=_submit_body(
             claim_id="dispute-setup",
             lines=[_line(line_number=1, service_code="COSMETIC-1", billed=10_000)],
         ),
     )
-    assert response.status_code == 201
-    body = response.json()
+    assert submit.status_code == 201
+    body = submit.json()
     decision = body["lines"][0]["decision"]
     assert decision["outcome"] == "DENIED"
-    excluded = next(r for r in decision["reasons"] if r["code"] == "DEN_EXCLUDED")
-    assert excluded["appealable"] is True
+    assert body["payable_minor"] == 0
+    original_decision_id = decision["id"]
 
-    fetched = client.get("/claims/dispute-setup")
-    assert fetched.status_code == 200
-    assert fetched.json()["lines"][0]["decision"]["id"] == decision["id"]
+    dispute = client.post(
+        "/claims/dispute-setup/lines/1/disputes",
+        json={"member_reason": "Should be covered as physio"},
+    )
+    assert dispute.status_code == 201
+    under_review = dispute.json()
+    assert under_review["adjudication_state"] == "UNDER_REVIEW"
+    assert under_review["lines"][0]["line_state"] == "UNDER_APPEAL"
+    assert under_review["lines"][0]["decision"]["id"] == original_decision_id
+
+    resolve = client.post(
+        "/reviews/dispute-setup-L1/resolve",
+        json={
+            "mode": "CORRECT_FACTS",
+            "reviewer_id": "rev1",
+            "note": "Mapped to physio catalogue entry",
+            "corrections": {"service_code": "PHYSIO-30"},
+        },
+    )
+    assert resolve.status_code == 200
+    approved = resolve.json()
+    assert approved["adjudication_state"] == "APPROVED"
+    assert approved["settlement_state"] == "DUE"
+    assert approved["payable_minor"] == 2_000
+    new_decision = approved["lines"][0]["decision"]
+    assert new_decision["outcome"] == "APPROVED"
+    assert new_decision["id"] != original_decision_id
+    assert new_decision["sequence"] == 2
+    assert new_decision["amounts"]["plan_paid_minor"] == 2_000
+
+    payment = client.post(
+        "/claims/dispute-setup/payments",
+        json={"amount_minor": 2_000, "reference": "NEFT-1"},
+    )
+    assert payment.status_code == 201
+    settled = payment.json()
+    assert settled["settlement_state"] == "SETTLED"
+    assert settled["payable_minor"] == 2_000
+
+    eob = client.get("/claims/dispute-setup/eob")
+    assert eob.status_code == 200
+    eob_body = eob.json()
+    assert eob_body["payable_minor"] == 2_000
+    assert eob_body["paid_minor"] == 2_000
+    assert eob_body["lines"][0]["outcome"] == "APPROVED"
+    assert eob_body["payments"][0]["reference"] == "NEFT-1"
+
+    accumulators = client.get("/members/m1/accumulators")
+    assert accumulators.status_code == 200
+    physio = next(
+        row
+        for row in accumulators.json()["balances"]
+        if row["scope"] == "BENEFIT_AMOUNT" and row["benefit_code"] == "PHYSIO"
+    )
+    assert physio["consumed"] == 2_000
+
+
+def test_validation_errors_do_not_echo_diagnosis_code(client: TestClient) -> None:
+    """Malformed bodies must not echo sensitive fields such as diagnosis_code in 422 responses."""
+    response = client.post(
+        "/claims",
+        json={
+            "id": "bad-shape",
+            "member_id": "m1",
+            "submitted_at": "2026-03-20T10:00:00",
+            "lines": [
+                {
+                    "line_number": 1,
+                    "provider_id": "prov1",
+                    "service_code": "PHYSIO-30",
+                    "service_date": "2026-03-15",
+                    "billed_amount_minor": "not-an-int",
+                    "diagnosis_code": "SECRET-DX-99",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "SECRET-DX-99" not in response.text
+    detail = response.json()["detail"]
+    assert isinstance(detail, list)
+    for item in detail:
+        assert "input" not in item
+        assert "SECRET-DX-99" not in str(item)
 
 
 def test_error_responses_do_not_echo_phi(client: TestClient) -> None:

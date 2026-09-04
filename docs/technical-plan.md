@@ -57,7 +57,7 @@ app/
     states.py           claim + line state machines and derivation
   application/      # use cases: orchestration + transaction boundaries
                     # claim_extractor.py — port + Pydantic facts → canonical Claim
-    submit_claim.py, resolve_review.py, file_dispute.py, mark_paid.py, build_eob.py
+    submit_claim.py, resolve_review.py, file_dispute.py, record_payment.py, build_eob.py
   infrastructure/   # SQLite: schema, repositories, unit of work
                     # gemini_extractor.py — Gemini client; domain must not import this
   api/              # FastAPI routers + pydantic request/response schemas
@@ -448,8 +448,9 @@ Declaring write intent up front converts a failure into a wait.
 **Two layers on top, both cheap:**
 
 - **Closing invariant.** Before commit, assert that no accumulator balance exceeds its limit. If one
-  does, roll back, pay nothing, route the line to `NEEDS_REVIEW`. This is the safety rule applied to our
-  own concurrency control: if the locking is ever wrong, the system stops rather than paying wrong.
+  does, roll back and return **409 Conflict** — do not commit partial ledger rows and do not route to
+  `NEEDS_REVIEW`. A closing-invariant failure means our own safety check caught an impossible state
+  (typically a locking or engine bug), not a member-facing review case.
 - **Retry by full re-adjudication.** If `BEGIN IMMEDIATE` times out, re-run the entire adjudication
   against fresh balances — never patch the previous result, because the correct answer genuinely differs
   once the other claim has committed. This is safe precisely because `adjudicate()` is pure and has no

@@ -241,6 +241,32 @@ def test_ineligible_service_date_is_denied() -> None:
     assert decision.reasons == (ReasonCodeId.DEN_NOT_ELIGIBLE,)
 
 
+def test_policy_termination_mid_claim_denies_line_after_termination_date() -> None:
+    """Per-line eligibility gate: service after termination_date is denied."""
+    claim = _claim(
+        _line(id="line1", line_number=1, service_date=date(2026, 3, 15)),
+        _line(
+            id="line2",
+            line_number=2,
+            service_code="PHYSIO-30",
+            service_date=date(2026, 3, 17),
+            provider_id="prov1",
+            billed_amount=Money(5_000),
+        ),
+    )
+    result = adjudicate(
+        claim,
+        _ctx(policy=_policy(termination_date=date(2026, 3, 16))),
+    )
+    line1 = _decision_for_line(result, "line1")
+    line2 = _decision_for_line(result, "line2")
+    assert line1 is not None
+    assert line2 is not None
+    assert line1.outcome is LineOutcome.APPROVED
+    assert line2.outcome is LineOutcome.DENIED
+    assert line2.reasons == (ReasonCodeId.DEN_NOT_ELIGIBLE,)
+
+
 # --- Gates 5 & 6 ---
 
 
