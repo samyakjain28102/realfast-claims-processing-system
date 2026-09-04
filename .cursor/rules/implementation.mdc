@@ -1,0 +1,42 @@
+---
+description: Post-implementation verification — tests, imports, and configured checks
+alwaysApply: true
+---
+# Implementation Verification
+
+After any code change (not documentation-only), before reporting completion:
+
+## 1. Install (if dependencies changed)
+
+```bash
+pip install -e ".[dev]"
+```
+
+## 2. Run the test suite
+
+```bash
+pytest
+```
+
+Report pass/fail honestly. Do not claim success without running tests.
+
+## 3. Run configured static / import checks
+
+Run every check defined in `pyproject.toml` (or other project config). At minimum:
+
+```bash
+python -c "import app; import app.domain; import app.application; import app.infrastructure; import app.api.main; import app.seed.load"
+```
+
+If `[tool.mypy]`, `[tool.ruff]`, `[tool.pyright]`, or similar sections exist in `pyproject.toml`, run those tools and fix or report failures.
+
+## 4. Report
+
+- Test count and outcome
+- Any static-check outcome (or state explicitly if none are configured)
+- Failures with the relevant output — do not hide errors
+
+## When to skip
+
+- Documentation-only edits with no code changes
+- The human explicitly asked for analysis or planning only
