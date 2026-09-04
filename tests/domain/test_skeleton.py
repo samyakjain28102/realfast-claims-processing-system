@@ -15,6 +15,7 @@ def test_domain_modules_import() -> None:
         "reasons",
         "accumulators",
         "engine",
+        "lifecycle",
         "states",
     ):
         importlib.import_module(f"app.domain.{name}")
@@ -23,6 +24,7 @@ def test_domain_modules_import() -> None:
 def test_application_modules_import() -> None:
     for name in (
         "submit_claim",
+        "prior_duplicates",
         "resolve_review",
         "file_dispute",
         "mark_paid",

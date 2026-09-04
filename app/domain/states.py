@@ -1,4 +1,4 @@
-"""Domain enums for line outcomes, claim lifecycles, and review/dispute workflow."""
+"""Domain enums for line outcomes and claim lifecycles. Derivation lives in lifecycle.py."""
 
 from __future__ import annotations
 

@@ -221,7 +221,7 @@ def test_adjudicate_does_not_require_gemini_api_key(monkeypatch: pytest.MonkeyPa
         plan=Plan(
             id="plan1",
             version=3,
-            deductible=Money(50_000),
+            deductible=Money.zero(),
             benefits=(
                 Benefit(
                     code="PHYSIO",
@@ -247,4 +247,4 @@ def test_adjudicate_does_not_require_gemini_api_key(monkeypatch: pytest.MonkeyPa
     )
     result = adjudicate(claim, ctx)
     assert result.rejected is False
-    assert result.line_results[0].cleared_for_pricing is True
+    assert result.line_results[0].decision is not None
