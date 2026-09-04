@@ -133,6 +133,20 @@ class PlanRepository:
         ).fetchall()
         return plan_from_rows(plan_row, benefit_rows)
 
+    def get_latest(self, plan_id: str) -> Plan | None:
+        row = self._conn.execute(
+            """
+            SELECT version FROM plans
+            WHERE id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (plan_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get(plan_id, int(row["version"]))
+
 
 class PolicyRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
