@@ -115,7 +115,8 @@ portion does not consume the benefit limit.
 **Alternatives:** per-benefit deductibles. **Why:** the common real design, and it creates cross-benefit
 interaction — a physio claim consumes the deductible that changes the outcome of a later diagnostics
 claim. Per-benefit deductibles are more machinery demonstrating less, since benefits never affect each
-other. **Consequence:** accumulator scope `DEDUCTIBLE` is policy-wide.
+other. **Consequence:** accumulator scope `DEDUCTIBLE` is policy-wide. The **amount** lives on
+`Plan.deductible` (D26), not on `Policy`.
 
 ### D14 — Correctness over throughput on concurrency
 See §4 — the trade-off with the most operational consequence.
@@ -140,8 +141,8 @@ drawing the diagrams did work that prose had not.
 lines until review clears. **Why:** committing consumption before a terminal decision risks corrupting
 accumulators if the review outcome changes the facts or keys (see D19). **Consequence:** all lines are evaluated on submit, but a line in `NEEDS_REVIEW` posts **no** ledger
 entries. Terminal siblings (`APPROVED`, `PARTIALLY_APPROVED`, `DENIED`) **do** post on initial submit.
-`payable` sums `plan_paid` from current terminal decisions only — review lines contribute zero until
-resolved. A claim with any review line stays `UNDER_REVIEW`. When review or appeal resolves, the
+`payable` sums `plan_paid` from current decisions that have a financial breakdown (D27) —
+review lines and other pre-pricing exits contribute zero until resolved. A claim with any review line stays `UNDER_REVIEW`. When review or appeal resolves, the
 **whole claim is re-adjudicated** deterministically. On re-adjudication: ledger entries from **superseded
 terminal** decisions are **reversed** (compensating append); entries for **new terminal** outcomes are
 **posted** — atomically (D19). Lines in `NEEDS_REVIEW` or `UNDER_APPEAL` never post entries, including
@@ -186,8 +187,10 @@ overrides are outside implementation scope** — future work if needed, with exp
 labelling and separate audit requirements.
 
 Dispute/review resolution therefore has two modes only:
-- **Correct facts and re-adjudicate** (whole claim, original plan version)
-- **Uphold** (close review/dispute; re-adjudication confirms original outcome unchanged)
+- **Correct facts and re-adjudicate** (whole claim, original plan version) — available for
+  `NEEDS_REVIEW` and for disputes
+- **Uphold** (dispute-only; re-adjudication confirms original outcome unchanged). Recorded on
+  `ReviewResolution`; the `LineDecision` keeps the RULES reason code (D28, D29)
 
 ### D22 — Submission idempotency deferred
 **Alternatives:** idempotency keys on `POST /claims`. **Why:** correct and valuable, but not load-bearing
@@ -220,8 +223,38 @@ that cannot be expressed as corrected facts — the same class of problem D21 re
 it, a line can remain in `NEEDS_REVIEW` indefinitely if facts never become sufficient. **Consequence:**
 **no in-scope action** closes a review as permanently undecidable. The claim stays `UNDER_REVIEW` until
 fact correction yields a terminal rules outcome (`APPROVED`, `PARTIALLY_APPROVED`, `DENIED`) or a
-dispute is upheld. **Future work:** explicit "close unresolved" with a terminal denial reason (e.g.
-`REV_UNRESOLVED`) or a governed manual disposition path — documented in §6 and `scope.md` §9.
+dispute is upheld. Uphold cannot close a `NEEDS_REVIEW` line that has no dispute (D28). **Future work:**
+explicit "close unresolved" with a terminal denial reason (e.g. `REV_UNRESOLVED`) or a governed manual
+disposition path — documented in §6 and `scope.md` §9.
+
+### D26 — `Plan.deductible` is the single source of truth
+**Alternatives:** duplicate `deductible` on `Policy`; allow a policy-level override. **Why:** a policy is
+an instance of a plan bounded in time; the deductible is a plan promise, not a per-enrolment override.
+Two fields would be two sources of truth. **Consequence:** `Policy` holds membership dates only. The
+deductible **amount** is `Plan.deductible`. Consumption remains per member per plan year (D13).
+
+### D27 — Money conservation applies only to priced decisions
+**Alternatives:** require a four-way amount split on every `LineDecision`, including `REJECTED` and
+`NEEDS_REVIEW`. **Why:** pre-pricing exits never compute an allowed amount; inventing
+`denied_amount = billed` would dress a validation outcome as financial adjudication. **Consequence:**
+the invariant `billed == above_allowed + deductible_applied + plan_paid + denied_amount` is a property
+of decisions that reach pricing / financial adjudication (gates 7–9). Claim `REJECTED`, `NEEDS_REVIEW`,
+and denials that terminate before pricing have **no** amount breakdown. `payable` sums `plan_paid` only
+from current decisions that have a breakdown; others contribute zero.
+
+### D28 — Uphold is dispute-only
+**Alternatives:** allow uphold to close a `NEEDS_REVIEW` line with no dispute. **Why:** that would close
+review without facts and without a rules-derived terminal outcome — the same class of judgement D25
+deferred. A dispute challenges a terminal decision; upholding confirms it. A `NEEDS_REVIEW` line has no
+terminal decision to confirm. **Consequence:** `mode=uphold` is valid only when an open dispute exists
+on the line. `NEEDS_REVIEW` without a dispute exits only by correcting facts and re-adjudicating.
+
+### D29 — Uphold is not a `LineDecision` reason code
+**Alternatives:** `HUM_UPHELD` on the resulting `LineDecision`. **Why:** that would replace the
+deterministic rules reason (e.g. `DEN_EXCLUDED`) with a process event, and the audit trail would no
+longer say why the plan said no. D21 requires all monetary outcomes `source=RULES`. **Consequence:**
+`HUM_UPHELD` is removed from the reason catalogue. `ReviewResolution.mode` records that the reviewer
+upheld. The appended `LineDecision` carries the RULES reason the engine produces.
 
 ---
 
@@ -337,6 +370,11 @@ Real-world complexity deliberately flattened. Each is a modelling choice, not an
 15. **Review resolution is iterative** (D23) — same endpoint, multiple fact-correction attempts.
 16. **No permanent "close as undecidable"** (D25) — future work; claims may stay `UNDER_REVIEW` until
     facts yield a terminal rules outcome.
+17. **Deductible amount lives on `Plan`** (D26), not on `Policy`.
+18. **Money conservation applies only to priced decisions** (D27). Pre-pricing exits have no amount
+    breakdown.
+19. **Uphold is dispute-only** (D28). `NEEDS_REVIEW` without a dispute is resolved by fact correction.
+20. **Uphold is recorded on `ReviewResolution`**, not as a `LineDecision` reason (D29).
 
 ---
 
@@ -390,7 +428,19 @@ use. In a real deployment these would matter more than anything in §4.
 
 ## 8. Open
 
-No open design decisions. What remains is reconciliation: this document and `docs/domain-model.md` were
-written before implementation, and every claim in them is re-verified against `app/` before submission.
-Anything the code does differently gets corrected here rather than quietly tolerated — a decisions doc
-that describes a system nobody built is worse than none.
+No open design decisions from D1–D29. Remaining items from the pre-implementation review are
+**deferred to the implementation slice that needs them**, not product-scope questions:
+
+- Future service date — gate 0
+- Zero billed amount — validation / financial adjudication
+- Double dispute and dispute of a superseded sequence — dispute use case (recommended: reject both)
+- `Dispute.state` values — dispute domain
+- Line state vs decision outcome — state derivation slice
+- Unknown provider / unmapped benefit — validation / catalogue lookup; do not invent a rule in advance
+- `INFO_COVERED` appealability — dispute use case
+- `OVERPAID` vs limit invariant I2 — still a documented gap; pick a reconciliation stance when
+  implementing settlement after appeal
+
+This document and `docs/domain-model.md` were written before implementation, and every claim in them is
+re-verified against `app/` before submission. Anything the code does differently gets corrected here
+rather than quietly tolerated.

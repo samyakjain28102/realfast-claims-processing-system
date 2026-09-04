@@ -77,18 +77,18 @@ wrong place.
 | Entity | Key fields | Notes |
 |---|---|---|
 | `Member` | id, name, date_of_birth | Identity only. **No clinical data** — §3.7 of scope. |
-| `Policy` | id, member_id, plan_id, effective_date, termination_date, deductible | One active policy per member. |
-| `Plan` | id, version, deductible, benefits[] | Versioned; the version is stamped on every decision. |
+| `Policy` | id, member_id, plan_id, effective_date, termination_date | One active policy per member. Eligibility dates only — **no deductible** (D26). |
+| `Plan` | id, version, deductible, benefits[] | Versioned; the version is stamped on every decision. **`deductible` is the single source of truth** (D26). |
 | `Benefit` | code, name, covered, excluded, annual_limit_amount, annual_visit_limit | A `Benefit` **is** the coverage rule (§2.2). |
 | `ServiceCatalogueEntry` | service_code, description, benefit_code, scheduled_amount | Service → benefit mapping and fee schedule in one seeded table. |
 | `Provider` | id, name | Deliberately thin — no network status (§3.2). |
 | `Claim` | id, member_id, submitted_at, lines[] | The envelope. **`adjudication_state` and `settlement_state` are derived** (§2.6) — never stored as a `state` column. |
 | `ClaimLine` | id, claim_id, line_number, provider_id, service_code, service_date, billed_amount, diagnosis_code | **Where clinical data lives**, separate from `Member`. |
-| `LineDecision` | id, line_id, sequence, source, outcome, amounts, reasons[], trace, plan_version, decided_at, decided_by | **Append-only.** |
+| `LineDecision` | id, line_id, sequence, source, outcome, amounts, reasons[], trace, plan_version, decided_at, decided_by | **Append-only.** Amount breakdown is present only when the decision reached financial adjudication (D27). |
 | `AccumulatorEntry` | id, key, quantity, decision_id, reverses_entry_id | **Append-only ledger** (§2.5). |
 | `Payment` | id, claim_id, amount, paid_at, reference | Append-only, never negative. Records that money moved; no payment system behind it. |
 | `Dispute` | id, line_id, disputed_decision_id, member_reason, state | Separate entity; original decision untouched. |
-| `ReviewResolution` | id, line_id, dispute_id?, mode, reviewer_id, note, corrections, resulting_decision_id | The exit from review. |
+| `ReviewResolution` | id, line_id, dispute_id?, mode, reviewer_id, note, corrections, resulting_decision_id | The exit from review. `mode=uphold` is **dispute-only** (D28) and is recorded here, not as a `LineDecision` reason (D29). |
 
 **[PROPOSED] Service date lives on the line, not the claim.** Real claims span dates, eligibility is
 judged per service date, and accumulators are keyed by plan year. Keeping the date on the line means a
@@ -161,15 +161,21 @@ plan_paid          = min(after_deductible, limit_remaining)    → plan pays
 denied_amount      = after_deductible - plan_paid              → member owes
 ```
 
-**Invariant, enforced as a property test on every decision:**
+**Invariant, enforced as a property test on every decision that reached pricing / financial
+adjudication (gates 7–9):**
 
 ```
 billed == above_allowed + deductible_applied + plan_paid + denied_amount
 ```
 
 Money is never created or destroyed by adjudication; it is only assigned to a party. If that assertion
-ever fails, a decision is wrong — and it will catch an entire class of arithmetic bug the example-based
-tests would miss.
+ever fails, a priced decision is wrong — and it will catch an entire class of arithmetic bug the
+example-based tests would miss.
+
+**[DECIDED] Pre-pricing exits have no financial breakdown** (D27). Claim `REJECTED`, `NEEDS_REVIEW`, and
+denials that terminate before pricing (gates 0–6) do not carry `allowed` / `above_allowed` /
+`deductible_applied` / `plan_paid` / `denied_amount`. The conservation test does not apply to them.
+`payable` sums `plan_paid` only from current decisions that have a breakdown.
 
 **The outcome is a coverage determination, not a payment amount.** This is the single most important
 modelling point in the pipeline, and it comes straight from the research:
@@ -315,7 +321,9 @@ message: **category**, **who absorbs the amount**, and **whether it is appealabl
 | `DEN_DUPLICATE` — confirmed duplicate of another line on this claim | member | yes |
 | `REV_UNKNOWN_SERVICE` / `REV_NO_PRICE` / `REV_SUSPECTED_DUPLICATE` | — | — |
 | `REJ_INVALID_CLAIM` | — | — |
-| `HUM_UPHELD` — reviewer upheld on dispute/review closure | — | no |
+
+There is **no** `HUM_UPHELD` reason code (D29). An uphold is a `ReviewResolution` event; the
+`LineDecision` it produces keeps the deterministic RULES reason (e.g. `DEN_EXCLUDED`).
 
 The appealable flag is what lets the dispute endpoint reject an appeal against a deductible with a real
 explanation instead of a validation error.
@@ -345,8 +353,10 @@ re-adjudicated against **original `plan_version`** (D18) → new `LineDecision` 
 `source=RULES`. If fact correction changes an accumulator key (e.g. plan year), reverse prior entries
 atomically before posting new ones (D19).
 
-**Uphold.** Reviewer closes review/dispute without fact changes → whole claim re-adjudicated → original
-outcomes confirmed → dispute record closed.
+**Uphold (dispute-only, D28).** Reviewer closes an **open dispute** without fact changes → whole claim
+re-adjudicated → original outcomes confirmed with the same RULES reason codes → `ReviewResolution`
+records `mode=uphold` → dispute record closed. Uphold on a `NEEDS_REVIEW` line with no dispute is
+**rejected** — that line can only exit via fact correction (D25).
 
 **Iterative resolution (D23).** `POST /reviews/{line_id}/resolve` accepts **multiple attempts** with
 updated facts until all lines under review reach terminal outcomes, or the reviewer upholds (dispute).
@@ -491,7 +501,7 @@ FastAPI, pydantic schemas at the boundary only — domain dataclasses never leak
 | `GET` | `/claims?member_id=` | List — shows accumulator effects across claims |
 | `GET` | `/claims/{id}/eob` | Member-facing summary |
 | `POST` | `/claims/{id}/lines/{n}/disputes` | File a dispute (rejects non-appealable reasons) |
-| `POST` | `/reviews/{line_id}/resolve` | Correct facts + re-adjudicate, or uphold |
+| `POST` | `/reviews/{line_id}/resolve` | Correct facts + re-adjudicate, or uphold (**dispute-only**) |
 | `POST` | `/claims/{id}/payments` | Record a payment; advances `settlement_state` |
 | `GET` | `/members/{id}/accumulators` | Balances per benefit and plan year |
 
@@ -526,8 +536,8 @@ def test_two_lines_on_one_claim_cannot_together_exceed_the_annual_limit(): ...
 
 Three beyond example-based tests:
 
-- **Money conservation** (§2.4) as a property test over generated claims. Catches arithmetic bugs no
-  example test would find.
+- **Money conservation** (§2.4, D27) as a property test over generated claims **that reached pricing**.
+  Pre-pricing outcomes are out of the invariant. Catches arithmetic bugs no example test would find.
 - **Determinism**: adjudicating identical inputs twice yields byte-identical decisions and traces. This
   is the safety rule expressed as an executable check.
 - **Concurrency** (§4.1), threaded, in `tests/application/`: two claims submitted simultaneously against
@@ -577,16 +587,19 @@ Explicitly decided:
 |---|---|---|---|
 | 1 | Persistence approach | stdlib `sqlite3` + `schema.sql` + thin repositories | §4 |
 | 2 | What the annual dollar limit caps | Plan payment; the deductible portion does not consume it | §2.4 |
-| 3 | Deductible scope | One per policy per plan year, shared across benefits | §2.4 |
+| 3 | Deductible scope | One per policy per plan year, shared across benefits; amount lives on `Plan` (D26) | §2.4 |
 | 4 | Duplicate handling | Confirmed (within claim) → denied; suspected (cross-claim) → review | §4 |
 | 5 | Accumulator storage | Append-only ledger | §2.5 |
 | 6 | Reviewer corrections in Path A | Facts only, never computed values | §3 |
 | 7 | Concurrent limit consumption | `BEGIN IMMEDIATE` before reading, closing invariant, retry by full re-adjudication | §4.1 |
 | 8 | Claim lifecycle | Two derived states — adjudication and settlement — not one chain ending in `PAID` | §2.6 |
-| 9 | Review resolution | Facts + re-adjudicate or uphold; no manual monetary overrides | §3, D21 |
+| 9 | Review resolution | Facts + re-adjudicate, or uphold (**dispute-only**); no manual monetary overrides | §3, D21, D28 |
 | 10 | NEEDS_REVIEW / UNDER_APPEAL lines post no ledger entries; terminal lines post when current; re-adjudication reverses superseded + posts new terminal atomically | D16, D19 | §2.5 |
 | 11 | Duplicate key + payment exactness + idempotency deferred | D17, D20, D22 | §3, §5 |
 | 12 | Iterative review resolution; append on each attempt; no permanent undecidable close | D23, D24, D25 | §3 |
+| 13 | Deductible amount source of truth | `Plan.deductible` only; not duplicated on `Policy` | D26 |
+| 14 | Money conservation scope | Priced decisions only; pre-pricing exits have no amount breakdown | D27 |
+| 15 | Uphold recording | `ReviewResolution.mode`; `LineDecision` keeps RULES reasons; no `HUM_UPHELD` | D29 |
 
 Adopted by default: functional core (§1), no `units` field (§2.1), service date on the line (§2.1),
 derived claim state (§2.6), reason-code attributes (§2.7), synchronous adjudication (§5).
@@ -607,6 +620,6 @@ Not open decisions — places where the plan could go wrong in implementation an
   does not get the other right.
 - **Reversal on appeal is the highest-risk code path** (§3). It is the only place decisions are
   superseded, and a missed reversal corrupts every later claim for that member — silently.
-- **The money-conservation invariant should be written early** (§6), not after the arithmetic is
-  finished. It's the cheapest safety net available and it only helps if it exists while the arithmetic
-  is being built.
+- **The money-conservation invariant should be written early** (§6, D27), not after the arithmetic is
+  finished. It applies to priced decisions only. It's the cheapest safety net available and it only
+  helps if it exists while the arithmetic is being built.

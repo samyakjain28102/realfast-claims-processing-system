@@ -43,8 +43,8 @@ later would let the explanation drift from what actually happened.
 |---|---|---|
 | `Member` | `id`, `name`, `date_of_birth` | **Identity only — no clinical data.** Diagnosis codes live on `ClaimLine`. Deliberate: it keeps the join between "who this is" and "what's wrong with them" explicit rather than incidental. |
 | `Provider` | `id`, `name` | Deliberately thin. No network status, no contracted rates — every provider is treated identically. |
-| `Plan` | `id`, `version`, `deductible`, `benefits[]` | Versioned. The version is stamped onto every decision it produces. |
-| `Policy` | `id`, `member_id`, `plan_id`, `effective_date`, `termination_date` | The link between a member and a plan, bounded in time. Eligibility is a date comparison against this. |
+| `Plan` | `id`, `version`, `deductible`, `benefits[]` | Versioned. **`deductible` is the single source of truth** for the policy-year deductible (D26). The version is stamped onto every decision it produces. |
+| `Policy` | `id`, `member_id`, `plan_id`, `effective_date`, `termination_date` | The link between a member and a plan, bounded in time. Eligibility is a date comparison against this. **No deductible field** — that amount lives on `Plan`. |
 | `Benefit` | `code`, `covered`, `excluded`, `annual_limit_amount`, `annual_visit_limit` | **A benefit *is* a coverage rule.** See §4. |
 | `ServiceCatalogueEntry` | `service_code`, `description`, `benefit_code`, `scheduled_amount` | Maps a billed service to the benefit that governs it, and to the price the plan will allow. |
 
@@ -55,17 +55,19 @@ later would let the explanation drift from what actually happened.
 | `Claim` | `id`, `member_id`, `submitted_at`, `lines[]` | The envelope. Both its states are **derived**, never assigned (§3.2). |
 | `Payment` | `id`, `claim_id`, `amount`, `paid_at`, `reference` | **Append-only, never negative.** Recording that money moved is not a payment system: there is no gateway, no reconciliation, no reversal. |
 | `ClaimLine` | `id`, `claim_id`, `line_number`, `provider_id`, `service_code`, `service_date`, `billed_amount`, `diagnosis_code` | Where clinical data lives. Carries its own `service_date`. |
-| `LineDecision` | `id`, `line_id`, `sequence`, `source`, `outcome`, amount breakdown, `reasons[]`, `trace`, `plan_version`, `decided_at`, `decided_by` | **Append-only.** The current decision is the highest `sequence`. |
-| `ReasonCode` | `code`, `message`, `liability`, `appealable` | Static catalogue, not a table of rows created at runtime. |
+| `LineDecision` | `id`, `line_id`, `sequence`, `source`, `outcome`, amount breakdown, `reasons[]`, `trace`, `plan_version`, `decided_at`, `decided_by` | **Append-only.** The current decision is the highest `sequence`. Amount breakdown is present only when the decision reached financial adjudication (D27). |
+| `ReasonCode` | `code`, `message`, `liability`, `appealable` | Static catalogue, not a table of rows created at runtime. No `HUM_UPHELD` — uphold is not a decision reason (D29). |
 | `AccumulatorEntry` | `id`, `key`, `quantity`, `decision_id`, `reverses_entry_id` | **Append-only ledger.** Balance is the sum. |
 | `Dispute` | `id`, `line_id`, `disputed_decision_id`, `member_reason`, `state` | Points at the *decision* disputed, not just the line — so it remains meaningful after later decisions supersede it. |
-| `ReviewResolution` | `id`, `line_id`, `dispute_id?`, `mode`, `reviewer_id`, `note`, `corrections`, `resulting_decision_id` | The only exit from `NEEDS_REVIEW` or `UNDER_APPEAL`. |
+| `ReviewResolution` | `id`, `line_id`, `dispute_id?`, `mode`, `reviewer_id`, `note`, `corrections`, `resulting_decision_id` | The only exit from `NEEDS_REVIEW` or `UNDER_APPEAL`. `mode=uphold` is **dispute-only** (D28) and is recorded here; the resulting `LineDecision` keeps the RULES reason code (D29). |
 
 **Two fields carry unusual weight.**
 
 `LineDecision.source` is `RULES` for every monetary outcome in this implementation. Manual
 computed-value overrides (`HUMAN_OVERRIDE`) are deferred (D21). Reviewer actions are recorded in
-`ReviewResolution` (fact corrections, uphold); the engine still produces all amounts and reason codes.
+`ReviewResolution` (fact corrections, or uphold on a dispute). The engine still produces all amounts
+and reason codes — including after uphold, which keeps the original RULES reason (e.g. `DEN_EXCLUDED`)
+rather than introducing a human-uphold code (D29).
 
 `ClaimLine.service_date` sits on the line, not the claim. Real claims span dates; eligibility is judged
 per service date; accumulators are keyed by plan year. With the date on the line, a claim crossing a
@@ -149,7 +151,9 @@ receives a **new** `LineDecision` with updated reason, trace, and inputs — not
 
 **No permanent close without rules (D25):** there is no in-scope action to mark a review "permanently
 undecidable." The claim stays `UNDER_REVIEW` until facts yield a terminal rules outcome or a dispute is
-upheld. Closing unresolved reviews is future work.
+upheld. Closing unresolved reviews is future work. **Uphold is dispute-only** (D28): a `NEEDS_REVIEW`
+line with no dispute cannot be closed by uphold. When a dispute is upheld, `ReviewResolution` records
+the uphold; the appended `LineDecision` keeps the RULES reason code (D29).
 
 ### 3.2 A claim has two lifecycles, not one
 
@@ -207,7 +211,9 @@ is under review again.
 #### Settlement state — derived from payments against what is owed
 
 `Payment` records are append-only and never negative. Let `payable` be the sum of `plan_paid` across each
-line's *current* decision, and `paid` the sum of payments recorded against the claim.
+line's *current* decision **that has a financial breakdown**, and `paid` the sum of payments recorded
+against the claim. Pre-pricing decisions (`REJECTED`, `NEEDS_REVIEW`, early-gate denials) have no
+`plan_paid` and contribute zero (D27).
 
 | Condition | Settlement state |
 |---|---|
@@ -302,7 +308,7 @@ denied_amount      = after_deductible - plan_paid           → member owes
 The annual dollar limit caps **plan payment**, not allowed amount: a benefit maximum limits the
 insurer's exposure, and the deductible is the member's own money. The deductible is **policy-wide** for
 the plan year, shared across benefits — so a physio claim consumes the deductible that then changes the
-outcome of a later diagnostics claim.
+outcome of a later diagnostics claim. The deductible **amount** is `Plan.deductible` (D26).
 
 Because line items have no `units`, every amount is produced by addition, subtraction, or `min` on
 integers. **There is no division and no rounding anywhere in the system.**
@@ -373,8 +379,10 @@ inputs, its result, and the accumulator balance before and after:
 Properties that must hold after every operation. Several are enforced as tests, one as a pre-commit
 check.
 
-1. **Money conservation.** `billed == above_allowed + deductible_applied + plan_paid + denied_amount`.
-   Adjudication never creates or destroys money; it only assigns it to a party. *(property test)*
+1. **Money conservation.** `billed == above_allowed + deductible_applied + plan_paid + denied_amount`
+   for every decision that reached pricing / financial adjudication. Pre-pricing exits have no amount
+   breakdown (D27). Adjudication never creates or destroys money; it only assigns it to a party.
+   *(property test on priced decisions)*
 2. **No accumulator exceeds its limit.** *(checked before commit; violation aborts and routes to review)*
 3. **Decisions are append-only**, and exactly one is current per line — the highest `sequence`.
 4. **Both claim states equal their derivations** in §3.2. Neither is ever assigned directly.

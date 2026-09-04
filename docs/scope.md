@@ -135,9 +135,11 @@ billed amount, diagnosis. The system re-adjudicates the **whole claim** determin
 unchanged rules = new decision; unchanged facts = same decision (not theatre — D19 may reverse ledger
 entries if keys changed).
 
-**Uphold.**
-The reviewer closes the review or dispute without fact changes. The claim is re-adjudicated to confirm
-the original outcome; the dispute record closes; no manual monetary override.
+**Uphold (dispute-only, D28).**
+The reviewer closes an **open dispute** without fact changes. The claim is re-adjudicated to confirm
+the original outcome; `ReviewResolution` records `mode=uphold`; the appended `LineDecision` keeps the
+RULES reason code (D29); the dispute record closes; no manual monetary override. Uphold on a
+`NEEDS_REVIEW` line with no dispute is rejected — that line exits only by fact correction.
 
 **Not in scope (D21, D25):** reviewers setting `plan_paid`, outcome, or reason codes directly. Judgement
 that cannot be expressed as corrected facts remains in `NEEDS_REVIEW` until facts exist — or stays
@@ -208,7 +210,7 @@ Minimal set that exercises every in-scope flow. **[REQ]** They will clone this a
 | Fetch a claim with all line decisions, amounts, and explanations | ✅ | The main demonstration surface. |
 | List claims for a member | ✅ | Needed to show accumulator effects across claims. |
 | File a dispute on a line-item decision | ✅ | Mandated flow. |
-| Resolve a `NEEDS_REVIEW` line or an appeal — correct facts and re-adjudicate, or uphold (§3.4.1) | ✅ | The only exit from review. Both modes live behind one endpoint. |
+| Resolve a `NEEDS_REVIEW` line (facts only) or an appeal (facts, or uphold) — §3.4.1 | ✅ | The only exit from review. Uphold is dispute-only (D28). |
 | Record a payment against a claim | ✅ | Advances the settlement lifecycle; records that money moved, with no payment system behind it. |
 | Fetch the EOB for a claim | ✅ | The member-facing explanation, in one call. |
 | Inspect a member's accumulators | ✅ | Makes limit exhaustion visible in the demo instead of implied. |
