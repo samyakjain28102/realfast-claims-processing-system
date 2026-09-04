@@ -15,6 +15,7 @@ def test_domain_modules_import() -> None:
         "reasons",
         "accumulators",
         "engine",
+        "lifecycle",
         "states",
     ):
         importlib.import_module(f"app.domain.{name}")

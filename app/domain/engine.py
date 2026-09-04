@@ -22,6 +22,7 @@ from app.domain.entities import (
     ServiceCatalogueEntry,
     TraceStep,
 )
+from app.domain.lifecycle import line_outcome_from_amounts
 from app.domain.money import Money
 from app.domain.reasons import ReasonCodeId
 from app.domain.rules import Benefit
@@ -553,7 +554,7 @@ def _finalize_priced_line(
                     claim=claim,
                     line=line,
                     ctx=ctx,
-                    outcome=LineOutcome.DENIED,
+                    outcome=line_outcome_from_amounts(amounts),
                     reasons=tuple(reasons),
                     trace=steps,
                     amounts=amounts,
@@ -670,13 +671,7 @@ def _finalize_priced_line(
         denied_amount=Money(denied_units),
     )
     amounts.check_conservation(line.billed_amount)
-
-    if denied_units > 0 and plan_paid_units == 0 and applied_units == 0:
-        outcome = LineOutcome.DENIED
-    elif denied_units > 0:
-        outcome = LineOutcome.PARTIALLY_APPROVED
-    else:
-        outcome = LineOutcome.APPROVED
+    outcome = line_outcome_from_amounts(amounts)
 
     reasons: list[ReasonCodeId] = []
     if pricing.above_allowed.minor_units > 0:
