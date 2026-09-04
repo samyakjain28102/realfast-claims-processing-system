@@ -256,6 +256,49 @@ longer say why the plan said no. D21 requires all monetary outcomes `source=RULE
 `HUM_UPHELD` is removed from the reason catalogue. `ReviewResolution.mode` records that the reviewer
 upheld. The appended `LineDecision` carries the RULES reason the engine produces.
 
+### D30 — Gemini extracts facts; the engine decides
+**Alternatives:** let Gemini produce coverage outcomes, amounts, or explanations; put a Gemini client
+in the domain layer; skip unstructured intake entirely with no recorded boundary. **Why:** an LLM is
+non-deterministic. Using it to decide coverage, pricing, deductible, limits, payment, outcome, or
+reason codes would make the same claim pay differently on two runs — the failure mode D2 and
+`.cursor/rules/project.mdc` exist to prevent. Extraction/normalization is a bounded, reviewable
+mapping into existing `Claim` fields; adjudication stays a pure function of those fields. **Consequence:**
+
+- Pipeline (implemented): raw claim → Gemini extraction → structured / schema validation →
+  canonical `Claim` → deterministic adjudication → decision + explanation.
+- Gemini must never determine coverage, pricing, deductible, limits, payment, outcome, reason codes,
+  or authoritative explanations.
+- Gemini lives in infrastructure / application (`gemini_extractor.py`, `claim_extractor.py`).
+  `app/domain/` has no Gemini dependency.
+- Google Gemini API; `GEMINI_API_KEY` from environment / secrets only; never hard-coded or logged.
+- **[PROPOSED]** default model `gemini-2.5-flash`; **[PROPOSED]** temperature `0`.
+- `claim_id` and `submitted_at` are supplied by the caller; they are not extracted from Gemini.
+- `quantity` is not extracted or mapped — `ClaimLine` has no quantity field (D11). Treating quantity
+  as a billed fact would be a future domain-model decision.
+- Already-structured claims bypass Gemini.
+- Final explanations come from deterministic reason codes / templates, not Gemini.
+- Domain tests never require live Gemini; mock the client in extraction / integration tests.
+- The extractor currently sends the full raw claim text. PHI minimization / redaction is
+  **[DEFERRED]** (see §7). Do not log raw claim text, prompts, responses, or the API key.
+
+Failed extraction and Gemini unavailability are **pre-adjudication errors** (D31), not domain
+`NEEDS_REVIEW`. After a canonical `Claim` exists, fact correction + re-adjudication (D7, D21) is
+unchanged.
+
+This is a different LLM use from retroactive-change *triage* in §6 / `scope.md` §9.1. Both share the
+same rule: the LLM never computes a number the member is paid.
+
+### D31 — Failed Gemini extraction is a pre-adjudication error
+**Alternatives:** create a `Claim` and route to `NEEDS_REVIEW`; invent an extraction reason code
+(e.g. `REV_EXTRACTION_FAILED`); treat failure as claim `REJECTED`. **Why:** extraction runs before
+a canonical `Claim` exists. `NEEDS_REVIEW` and `REJECTED` are engine outcomes on a claim that
+already entered adjudication. Inventing a reason code would dress an intake failure as a coverage
+decision. Gemini being down is an infrastructure failure, not a coverage question. **Consequence:**
+invalid / insufficient Gemini output raises `ClaimExtractionValidationError`; Gemini / API
+unavailability raises `ClaimExtractionApiError`. No canonical `Claim` is created. No
+`LineDecision` is written. No new adjudication reason code is added. Callers see an application /
+infrastructure error — not a domain review state.
+
 ---
 
 ## 3. Deliberate departures from real-world practice
@@ -375,6 +418,13 @@ Real-world complexity deliberately flattened. Each is a modelling choice, not an
     breakdown.
 19. **Uphold is dispute-only** (D28). `NEEDS_REVIEW` without a dispute is resolved by fact correction.
 20. **Uphold is recorded on `ReviewResolution`**, not as a `LineDecision` reason (D29).
+21. **Gemini extracts and normalizes facts only** (D30). The engine remains the source of truth.
+    Domain has no Gemini dependency. Unstructured HTTP submit is still deferred.
+22. **Failed or unavailable Gemini extraction is a pre-adjudication error** (D31) — not
+    `NEEDS_REVIEW`, not a new reason code.
+23. **`claim_id` and `submitted_at` are caller-supplied**, not extracted. **`quantity` is not
+    extracted** (D11).
+24. **Full raw claim text is sent to Gemini today.** PHI minimization / redaction is deferred.
 
 ---
 
@@ -400,10 +450,15 @@ rule shape the model already demonstrates.
 | Manual financial/computed-value overrides (D21) | Fact correction + rules engine | Non-deterministic; needs `HUMAN_OVERRIDE` audit model — future scope |
 | Close review as permanently undecidable (D25) | Lines can remain in `NEEDS_REVIEW` indefinitely | Judgement without facts; needs terminal disposition reason or governed override — future scope |
 | Submission idempotency (D22) | — | Retry may duplicate claims — future scope |
-| Submission idempotency (D22) | — | Correctness risk documented; not needed to demonstrate domain modelling |
+| Unstructured HTTP submit shape | Gemini extractor (D30) | New field vs new endpoint — not built |
+| PHI minimization / redaction of Gemini payload | Full raw text currently sent; no logging of text/key | Field-list redaction is future work |
+| Persistence of raw text / extraction artifacts | Canonical `Claim` only | Audit of the raw blob is future work |
 
 Retroactive policy changes: detect, surface, route to review; never auto-reverse. If an LLM is ever used
 there, it may triage and propose; a human approves; deterministic rules compute every number.
+
+Unstructured intake uses Gemini the same way: **extract facts, never decide**. That is D30, not a
+second adjudication engine. Failed extraction is a pre-adjudication error (D31).
 
 ---
 
@@ -415,7 +470,9 @@ and access control are explicitly out of scope, so this cannot mean building sec
 - **Member identity and clinical data are separate entities.** Diagnosis codes live on `ClaimLine`, never
   on `Member`, so the join between "who this is" and "what is wrong with them" is explicit.
 - **No PHI in logs or error messages** — identifiers only. The most common real leak, and nearly free
-  to avoid.
+  to avoid. **[DECIDED]** The same rule applies to Gemini (D30): do not log raw claim text, prompts,
+  Gemini responses, or `GEMINI_API_KEY`. The extractor currently sends the **full raw claim text**.
+  A minimization / redaction strategy is **[DEFERRED]** and is not implemented.
 - **Every decision and state transition is audited**, with the actor recorded. Review resolutions
   (fact corrections, uphold) are distinguishable from rules-derived decisions via `ReviewResolution` and
   `LineDecision.source=RULES` on all monetary outcomes.
@@ -428,8 +485,8 @@ use. In a real deployment these would matter more than anything in §4.
 
 ## 8. Open
 
-No open design decisions from D1–D29. Remaining items from the pre-implementation review are
-**deferred to the implementation slice that needs them**, not product-scope questions:
+No open *adjudication* design decisions from D1–D31. Remaining items from the pre-implementation
+review are **deferred to the implementation slice that needs them**, not product-scope questions:
 
 - Future service date — gate 0
 - Zero billed amount — validation / financial adjudication
@@ -440,6 +497,16 @@ No open design decisions from D1–D29. Remaining items from the pre-implementat
 - `INFO_COVERED` appealability — dispute use case
 - `OVERPAID` vs limit invariant I2 — still a documented gap; pick a reconciliation stance when
   implementing settlement after appeal
+
+D30 / D31 closed the extraction-slice questions (pre-adjudication failure, no quantity, caller
+identity fields, Gemini-unavailable as an API error). Still **[DEFERRED]**:
+
+- Unstructured HTTP shape
+- Persistence of raw unstructured text and extraction artifacts
+- PHI minimization / redaction of the Gemini payload
+- Retries / timeouts beyond the current client call
+
+**[PROPOSED]** (not elevated): default model `gemini-2.5-flash`; temperature `0`.
 
 This document and `docs/domain-model.md` were written before implementation, and every claim in them is
 re-verified against `app/` before submission. Anything the code does differently gets corrected here
