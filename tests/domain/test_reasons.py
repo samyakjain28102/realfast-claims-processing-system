@@ -39,6 +39,7 @@ def test_denial_codes_are_appealable() -> None:
 def test_review_and_reject_codes_have_no_liability_or_appealability() -> None:
     for code in (
         ReasonCodeId.REV_UNKNOWN_SERVICE,
+        ReasonCodeId.REV_UNKNOWN_BENEFIT,
         ReasonCodeId.REV_NO_PRICE,
         ReasonCodeId.REV_SUSPECTED_DUPLICATE,
         ReasonCodeId.REJ_INVALID_CLAIM,
