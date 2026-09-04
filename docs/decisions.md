@@ -131,7 +131,9 @@ two independent questions — *what did we decide* and *what have we paid*. **Co
 fields instead of one. The awkward case then needs no special handling: adjudication returns to
 `UNDER_REVIEW` while settlement stays `SETTLED`; if the appeal succeeds, `payable` rises and settlement
 becomes `DUE` by itself. A supplementary payment is just another payment record. `OVERPAID` exists as an
-anomaly the system surfaces rather than corrects, since there are no clawbacks.
+anomaly the system surfaces rather than corrects, since there are no clawbacks. Re-adjudication still
+reverses and reposts **ledger** entries (D19); **payments** stay append-only. Later claims read the
+current ledger balance, not historical payment totals.
 
 This was found while writing the state machines, not while scoping — worth recording as evidence that
 drawing the diagrams did work that prose had not.
@@ -334,9 +336,11 @@ Three layers prevent it:
    write transaction database-wide and guarantees that once `BEGIN IMMEDIATE` succeeds, nothing later in
    that transaction fails with `SQLITE_BUSY`. The second claim cannot begin until the first commits, so
    it reads ₹10,000 consumed and denies correctly.
-2. **A closing invariant** refuses to commit any decision that would push a balance past its limit,
-   routing to `NEEDS_REVIEW` instead. This is the safety rule turned on our own concurrency control: if
-   the locking is ever wrong, the system stops rather than paying wrong.
+2. **A closing invariant** refuses to commit any decision that would push a balance past its limit.
+   The transaction rolls back and the API returns **409 Conflict** (`AccumulatorLimitExceededError`).
+   This is an internal consistency failure — not an ordinary claim outcome — so it does **not** route
+   to `NEEDS_REVIEW` or invent a reason code. If the locking is ever wrong, the system stops rather
+   than paying wrong.
 3. **Retry by full re-adjudication**, never by patching the earlier result — the correct answer genuinely
    differs once the other claim has committed. Safe because the engine is pure (D9).
 
@@ -495,8 +499,8 @@ review are **deferred to the implementation slice that needs them**, not product
 - Line state vs decision outcome — state derivation slice
 - Unknown provider / unmapped benefit — validation / catalogue lookup; do not invent a rule in advance
 - `INFO_COVERED` appealability — dispute use case
-- `OVERPAID` vs limit invariant I2 — still a documented gap; pick a reconciliation stance when
-  implementing settlement after appeal
+- `OVERPAID` vs limit invariant I2 — **resolved:** ledger reflects current adjudication; payments are
+  not clawed back; `OVERPAID` is settlement-only visibility (see D15, `domain-model.md` settlement §)
 
 D30 / D31 closed the extraction-slice questions (pre-adjudication failure, no quantity, caller
 identity fields, Gemini-unavailable as an API error). Still **[DEFERRED]**:

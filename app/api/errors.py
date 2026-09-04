@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.application.claim_queries import ClaimNotFoundError, MemberNotFoundError
@@ -37,7 +38,30 @@ from app.application.submit_claim import (
 from app.application.submit_claim import MemberNotFoundError as SubmitMemberNotFoundError
 
 
+def _sanitize_validation_errors(exc: RequestValidationError) -> list[dict[str, object]]:
+    """Drop submitted values from 422 bodies so PHI is not echoed."""
+    sanitized: list[dict[str, object]] = []
+    for error in exc.errors():
+        sanitized.append(
+            {
+                "loc": error.get("loc"),
+                "msg": error.get("msg"),
+                "type": error.get("type"),
+            }
+        )
+    return sanitized
+
+
 def register_exception_handlers(app: FastAPI) -> None:
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _sanitize_validation_errors(exc)},
+        )
+
     @app.exception_handler(ClaimNotFoundError)
     async def claim_not_found(
         _request: Request, exc: ClaimNotFoundError

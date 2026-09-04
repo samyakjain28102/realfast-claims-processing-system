@@ -472,3 +472,76 @@ def test_second_open_dispute_on_same_line_is_rejected(db: SqliteDatabase) -> Non
     with pytest.raises(DisputeAlreadyOpenError):
         _dispute(db, "c1", 1)
     assert len(db.disputes.list_open_for_line("c1-L1")) == 1
+
+
+def test_uphold_re_adjudication_preserves_monetary_outcome(db: SqliteDatabase) -> None:
+    _seed(db)
+    submit_claim(
+        db,
+        _claim("c1", _line("c1", 1, service_code="COSMETIC-1", billed=10_000)),
+    )
+    before = get_claim(db, "c1")
+    original = db.decisions.current_for_line("c1-L1")
+    assert original is not None
+    assert original.amounts is None
+
+    _dispute(db, "c1", 1)
+    result = _uphold(db, "c1-L1")
+    after = get_claim(db, "c1")
+
+    assert result.payable == Money.zero()
+    assert after.payable_minor == before.payable_minor
+    current = db.decisions.current_for_line("c1-L1")
+    assert current is not None
+    assert current.sequence == 2
+    assert current.outcome is LineOutcome.DENIED
+    assert current.amounts is None
+    assert db.accumulators.balance(_amount_key()) == 0
+
+
+def test_appeal_on_sibling_reverses_deductible_ledger_without_changing_plan_paid(
+    db: SqliteDatabase,
+) -> None:
+    _seed(db, deductible=10_000)
+    submit_claim(
+        db,
+        _claim(
+            "c1",
+            _line("c1", 1, service_code="PHYSIO-30", service_date=date(2026, 3, 15)),
+            _line(
+                "c1",
+                2,
+                service_code="COSMETIC-1",
+                service_date=date(2026, 3, 16),
+                billed=10_000,
+            ),
+        ),
+    )
+    line1_first = db.decisions.current_for_line("c1-L1")
+    assert line1_first is not None
+    assert line1_first.amounts is not None
+    assert line1_first.amounts.plan_paid == Money.zero()
+    assert line1_first.amounts.deductible_applied == Money(4_000)
+    first_deductible_entries = [
+        entry
+        for entry in db.accumulators.list_for_decision(line1_first.id)
+        if entry.key.scope is AccumulatorScope.DEDUCTIBLE
+    ]
+    assert len(first_deductible_entries) == 1
+
+    _dispute(db, "c1", 2)
+    _correct(db, "c1-L2", LineFactCorrections(service_code="PHYSIO-30"))
+
+    line1_second = db.decisions.current_for_line("c1-L1")
+    assert line1_second is not None
+    assert line1_second.id != line1_first.id
+    assert line1_second.amounts is not None
+    assert line1_second.amounts.plan_paid == Money.zero()
+    assert line1_second.amounts.deductible_applied == Money(4_000)
+
+    reversed_ids = {
+        entry.reverses_entry_id
+        for entry in db.accumulators.list_for_decision(line1_second.id)
+        if entry.reverses_entry_id is not None
+    }
+    assert first_deductible_entries[0].id in reversed_ids

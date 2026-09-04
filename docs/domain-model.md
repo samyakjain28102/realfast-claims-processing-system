@@ -255,6 +255,14 @@ settlement state is `DUE`. We never pay a claim that is still under review.
 already-paid amount. With no clawbacks, the system's job is to make the discrepancy visible — the same
 detect-and-surface stance taken everywhere the correct action requires human judgement.
 
+**Ledger vs settlement after an appeal.** Re-adjudication **does** reverse and repost accumulator entries
+to match the current terminal decisions (D19). **`Payment` rows are append-only and never reversed.**
+When `paid > payable`, settlement becomes `OVERPAID` while the ledger reflects the **current**
+adjudicated benefit consumption. A later claim for the same member and benefit is adjudicated against
+that ledger balance, not against historical payment totals. There is no automatic clawback and no
+synthetic “paid back” ledger entry — the distinction between “money that moved” (payments) and “benefit
+consumed” (ledger) is intentional.
+
 #### Why this is better than a single chain
 
 Walk the awkward case through both fields and it stops being awkward. A claim is partially approved and

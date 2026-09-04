@@ -423,6 +423,8 @@ def test_payments_are_append_only(
         seeded_db.connection.execute(
             "UPDATE payments SET amount_minor = 2 WHERE id = 'pay1'"
         )
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        seeded_db.connection.execute("DELETE FROM payments WHERE id = 'pay1'")
 
 
 def test_round_trip_dispute_and_review_resolution(

@@ -117,7 +117,7 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 | A4 | Decision `DENIED` at gate 5 (not covered) | Submit | **No** benefit/deductible consumption | Gates before arithmetic **[PROPOSED]** |
 | A5 | Decision `NEEDS_REVIEW` at gate 1 | Submit | **No** consumption | D16 **[DECIDED]** |
 | A6 | Terminal approval after review resolution | Resolve | Ledger posts per rules engine output only | D21 **[DECIDED]** |
-| A7 | `OVERPAID` after payable drops | Appeal reduces plan pay | Prior ledger entries **not** auto-reversed | No clawbacks **[DECIDED]** — manual/process gap **[GAP]** |
+| A7 | `OVERPAID` after payable drops | Appeal reduces plan pay | Ledger **is** reversed/reposted on re-adjudication (D19); payments stay append-only; `OVERPAID` is settlement visibility only | D15, D19 **[DECIDED]** |
 
 ### 1.9 Concurrency & transaction safety
 
@@ -125,7 +125,7 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 |---|---|---|---|---|
 | X1 | Limit ₹10,000; ₹8,000 consumed; Claim A wants ₹4,000; Claim B wants ₹4,000 | Submit **concurrently** | Total `plan_paid` across both ≤ ₹10,000; one partial/one denied; no silent overspend | D14 BEGIN IMMEDIATE **[DECIDED]** |
 | X2 | Same as X1 but sequential | Submit B after A commits | B reads ₹10,000 consumed; fully denied | Deterministic ordering given same inputs **[PROPOSED]** |
-| X3 | Closing invariant triggered (bug injected) | Commit | Transaction **rolled back**; line → `NEEDS_REVIEW` or submit fails; no partial ledger | Safety net **[DECIDED]** |
+| X3 | Closing invariant triggered (bug injected) | Commit | Transaction **rolled back**; submit fails with **409**; no partial ledger; not routed to `NEEDS_REVIEW` | Safety net **[DECIDED]** |
 | X4 | `BEGIN IMMEDIATE` busy | Retry | Full re-adjudication with fresh balances; no patch of stale result | D9 pure engine **[DECIDED]** |
 | X5 | Two threads, **different members**, unrelated benefits | Concurrent submit | Both succeed but **serialised** (throughput cost only) | D14 throughput trade-off **[DECIDED]** |
 
@@ -200,7 +200,7 @@ slice 1 does not invent a default.
 
 | # | Issue | Slice | Recommendation |
 |---|---|---|---|
-| **E** | **`OVERPAID` ledger drift** A7 / S7 | Settlement after appeal | **[GAP]** — pick: (a) `OVERPAID` exempts further limit enforcement for that claim, or (b) require manual reconciliation workflow. Surface in API either way. |
+| **E** | **`OVERPAID` ledger drift** A7 / S7 | Settlement after appeal | **Resolved:** ledger reverses/reposts on re-adjudication (D19); payments stay append-only; `OVERPAID` is settlement visibility only |
 | **I** | **Future service date** V2 | Gate 0 | Recommend **`REJECTED`** at claim level (deterministic). |
 | **J** | **Double dispute** S8 | Dispute use case | Recommend **reject if dispute already open**. |
 | **K** | **Dispute targets old sequence** S9 | Dispute use case | Recommend **reject; dispute current decision only**. |
@@ -249,7 +249,7 @@ Non-negotiable. Violation = bug, not edge case.
 | ID | Invariant | Enforcement |
 |---|---|---|
 | I1 | **Money conservation:** `billed == above_allowed + deductible_applied + plan_paid + denied_amount` on decisions that reached pricing | Property test on priced decisions only (D27). Pre-pricing exits have no breakdown. |
-| I2 | **No silent limit breach:** sum of `plan_paid` ledger for benefit key in plan year ≤ annual limit | Pre-commit check; abort → review |
+| I2 | **No silent limit breach:** sum of `plan_paid` ledger for benefit key in plan year ≤ annual limit | Pre-commit check; abort → **409** on invariant failure |
 | I3 | **No silent deductible breach:** deductible ledger ≤ plan deductible | Pre-commit check |
 | I4 | **Visit count ≤ annual visit limit** after commit | Pre-commit check |
 | I5 | **Determinism:** same `(claim, context snapshot)` → same decisions and traces | Domain test |
@@ -272,7 +272,9 @@ Non-negotiable. Violation = bug, not edge case.
 | I22 | **Gemini never decides:** coverage, pricing, deductible, limits, payment, outcome, and reason codes come only from the engine | Extraction tests L1, L6 |
 | I23 | **Domain has no Gemini dependency:** `adjudicate()` and `tests/domain/` do not call an LLM or require `GEMINI_API_KEY` | Import/architecture test + L4 |
 
-**Clarification on I2 vs OVERPAID:** After S7, ledger may exceed what *current* payable implies. **[GAP]** — either (a) OVERPAID freezes limit checks for that claim, or (b) reconciliation job required. Pick one before implementation.
+**Clarification on I2 vs OVERPAID:** Ledger reflects **current** adjudication after re-adjudication (D19).
+Payments are not clawed back. `OVERPAID` means `paid > payable` on the settlement axis only; later claims
+are limited by the ledger balance, not historical payment totals (D15).
 
 ---
 

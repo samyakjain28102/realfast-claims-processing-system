@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -35,7 +36,7 @@ from app.domain.money import Money
 from app.domain.reasons import ReasonCodeId
 from app.domain.rules import Benefit
 from app.domain.states import ClaimAdjudicationState, SettlementState
-from app.infrastructure.db import SqliteDatabase
+from app.infrastructure.db import SqliteDatabase, is_sqlite_lock_error
 from app.infrastructure.mapping import parse_date
 
 
@@ -79,34 +80,51 @@ class SubmitClaimResult:
 def submit_claim(db: SqliteDatabase, claim: Claim) -> SubmitClaimResult:
     """Adjudicate and persist a claim atomically."""
     _validate_claim_facts(db, claim)
-    db.begin_immediate()
-    try:
-        policy = _load_policy(db, claim)
-        plan = _load_plan(db, policy)
-        catalogue = db.catalogue.as_mapping()
-        suspected_keys = _load_suspected_duplicate_keys(db, claim.member_id)
-        consumed = _load_accumulator_balances(db, claim, plan, catalogue)
-        ctx = AdjudicationContext(
-            policy=policy,
-            plan=plan,
-            catalogue=catalogue,
-            suspected_duplicate_keys=suspected_keys,
-            as_of=claim.submitted_at.date(),
-            decided_at=claim.submitted_at,
-            accumulator_consumed=consumed,
-        )
-        result = adjudicate(claim, ctx)
-        _persist_submission(db, claim, result)
-        _assert_within_limits(
-            plan=plan,
-            consumed_before=consumed,
-            deltas=result.accumulator_deltas,
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    return _build_result(claim, result)
+    while True:
+        try:
+            db.begin_immediate()
+        except sqlite3.OperationalError as exc:
+            if is_sqlite_lock_error(exc):
+                continue
+            raise
+        try:
+            result = _adjudicate_and_persist(db, claim)
+            db.commit()
+        except sqlite3.OperationalError as exc:
+            db.rollback()
+            if is_sqlite_lock_error(exc):
+                continue
+            raise
+        except Exception:
+            db.rollback()
+            raise
+        return _build_result(claim, result)
+
+
+def _adjudicate_and_persist(db: SqliteDatabase, claim: Claim) -> AdjudicationResult:
+    """Read balances inside the write transaction, adjudicate, and persist."""
+    policy = _load_policy(db, claim)
+    plan = _load_plan(db, policy)
+    catalogue = db.catalogue.as_mapping()
+    suspected_keys = _load_suspected_duplicate_keys(db, claim.member_id)
+    consumed = _load_accumulator_balances(db, claim, plan, catalogue)
+    ctx = AdjudicationContext(
+        policy=policy,
+        plan=plan,
+        catalogue=catalogue,
+        suspected_duplicate_keys=suspected_keys,
+        as_of=claim.submitted_at.date(),
+        decided_at=claim.submitted_at,
+        accumulator_consumed=consumed,
+    )
+    result = adjudicate(claim, ctx)
+    _persist_submission(db, claim, result)
+    _assert_within_limits(
+        plan=plan,
+        consumed_before=consumed,
+        deltas=result.accumulator_deltas,
+    )
+    return result
 
 
 def _validate_claim_facts(db: SqliteDatabase, claim: Claim) -> None:
