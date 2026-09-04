@@ -24,6 +24,9 @@ def test_domain_modules_import() -> None:
 def test_application_modules_import() -> None:
     for name in (
         "submit_claim",
+        "claim_queries",
+        "get_member_accumulators",
+        "read_models",
         "prior_duplicates",
         "resolve_review",
         "file_dispute",
@@ -35,5 +38,8 @@ def test_application_modules_import() -> None:
 
 def test_infrastructure_and_api_import() -> None:
     importlib.import_module("app.infrastructure")
+    importlib.import_module("app.infrastructure.db")
+    importlib.import_module("app.infrastructure.mapping")
+    importlib.import_module("app.infrastructure.repositories")
     importlib.import_module("app.api.main")
     importlib.import_module("app.seed.load")
