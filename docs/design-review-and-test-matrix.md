@@ -142,20 +142,21 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 | F7 | Payment attempted while `UNDER_REVIEW` | POST payment | **Rejected** | D15 guard **[DECIDED]** |
 | F8 | Payment amount ≠ payable | POST payment | **Rejected** | D20 **[DECIDED]** |
 
-### 1.12 LLM extraction boundary (deferred slice)
+### 1.12 LLM extraction boundary
 
-Not in the current build. Write these when `technical-plan.md` §7 step 13 is implemented. They
-protect D30 — Gemini must not become a second adjudicator.
+Protects D30 / D31 — Gemini must not become a second adjudicator. Extraction is implemented before
+pricing (`technical-plan.md` step 2a).
 
 | ID | Given | When | Then | Validates |
 |---|---|---|---|---|
 | L1 | Unstructured input; extraction + Pydantic validation succeed | Intake via Gemini path | Canonical `Claim` is passed to `adjudicate()`; Gemini is **not** asked for coverage, amounts, outcome, or reason codes | D30 **[DECIDED]** |
-| L2 | Extraction missing/ambiguous/invalid (fails schema) | Intake via Gemini path | **No invented facts.** Existing review flow where appropriate (`NEEDS_REVIEW` and/or fact correction). Exact `REJECTED` vs `NEEDS_REVIEW` is **[DEFERRED]** | D2 + D30 |
+| L2 | Extraction missing/ambiguous/invalid (fails schema) | Intake via Gemini path | **No invented facts.** Pre-adjudication `ClaimExtractionValidationError`. No `Claim`. No `NEEDS_REVIEW`. No new reason code | D31 **[DECIDED]** |
 | L3 | Structured `POST /claims` with line items | Submit | Gemini is **bypassed**; engine runs on the submitted `Claim` | D30 **[DECIDED]** |
 | L4 | `tests/domain/` | `adjudicate(claim, ctx)` | No network, no `GEMINI_API_KEY`, no Gemini SDK | D9 + D30 **[DECIDED]** |
 | L5 | Extracted `service_code` was wrong | Reviewer corrects facts; resolve | Whole-claim re-adjudication; new `LineDecision` `source=RULES` | D7 + D21 + D30 **[DECIDED]** |
 | L6 | Terminal decision after extracted intake | Fetch claim / EOB | Explanation is reason-code template + engine trace, **not** Gemini prose | D30 **[DECIDED]** |
-| L7 | Gemini client | Logs / error handler | No API key; no indiscriminate PHI (identifiers only) | D30 + I16 **[DECIDED]** |
+| L7 | Gemini client | Logs / error handler | No API key; no raw claim text, prompts, or responses | D30 + I16 **[DECIDED]** |
+| L8 | Gemini / API unavailable | Intake via Gemini path | `ClaimExtractionApiError`. No `Claim`. Not `NEEDS_REVIEW` | D31 **[DECIDED]** |
 
 ### 1.11 Structural validation & rejection
 
@@ -171,9 +172,9 @@ protect D30 — Gemini must not become a second adjudicator.
 
 ## 2. Contradictions & ambiguities
 
-Updated after D16–D29. Resolved items marked ✅; remaining items are deferred to a named implementation slice.
+Updated after D16–D31. Resolved items marked ✅; remaining items are deferred to a named implementation slice.
 
-### 2.1 Resolved (D16–D29)
+### 2.1 Resolved (D16–D31)
 
 | # | Was | Resolution |
 |---|---|---|
@@ -190,6 +191,7 @@ Updated after D16–D29. Resolved items marked ✅; remaining items are deferred
 | **Conservation scope** | Invariant on every decision vs pre-pricing exits | ✅ **D27** — priced decisions only; pre-pricing exits have no amount breakdown; `payable` sums priced `plan_paid` only |
 | **Uphold target** | Close review or dispute | ✅ **D28** — dispute-only |
 | **HUM_UPHELD** | Reason code on `LineDecision` | ✅ **D29** — removed; `ReviewResolution.mode` records uphold; `LineDecision` keeps RULES reasons |
+| **Gemini failure mode** | `REJECTED` vs `NEEDS_REVIEW` vs invent a reason | ✅ **D31** — pre-adjudication error; no Claim; no new reason code |
 
 ### 2.2 Deferred to the implementation slice that needs them
 
@@ -210,7 +212,7 @@ slice 1 does not invent a default.
 | **Line state vs outcome** | `UNDER_APPEAL` is not a decision outcome | State derivation | Derived from current decision + open dispute. |
 | **Unknown provider / benefit** | No gate specified | Validation / catalogue lookup | Do not invent a rule in advance; surface when implementing lookup. |
 | **INFO_COVERED appealability** | Catalogue shows "—" | Dispute use case | Resolve when implementing disputes. |
-| **Gemini extraction details** | Model, prompt, HTTP shape, failed-extraction outcome | Extraction slice (§1.12) | D30 principle is decided. Do not invent remaining details in slice 1. |
+| **Gemini remaining intake plumbing** | HTTP shape, raw-text persistence, PHI redaction | Later intake / API | Extractor is built (D30, D31). Do not invent an HTTP shape in pricing. |
 
 ### 2.3 Documentation drift (cosmetic)
 
@@ -267,7 +269,7 @@ Non-negotiable. Violation = bug, not edge case.
 | I16 | **PHI not in logs** | Manual/checklist + test on error handler |
 | I17 | **Working balance monotonicity within claim:** later lines see cumulative consumption from earlier lines on same keys | Domain test M4 |
 | I18 | **Concurrent safety:** total plan pay for a benefit key never exceeds limit after any commit sequence | Threaded test X1 |
-| I22 | **Gemini never decides:** coverage, pricing, deductible, limits, payment, outcome, and reason codes come only from the engine | Extraction tests L1, L6 when §10 is built |
+| I22 | **Gemini never decides:** coverage, pricing, deductible, limits, payment, outcome, and reason codes come only from the engine | Extraction tests L1, L6 |
 | I23 | **Domain has no Gemini dependency:** `adjudicate()` and `tests/domain/` do not call an LLM or require `GEMINI_API_KEY` | Import/architecture test + L4 |
 
 **Clarification on I2 vs OVERPAID:** After S7, ledger may exceed what *current* payable implies. **[GAP]** — either (a) OVERPAID freezes limit checks for that claim, or (b) reconciliation job required. Pick one before implementation.
@@ -358,23 +360,25 @@ Not proposals to reopen scope — places a skeptical reviewer would push back.
 | D21 no manual overrides | Some real appeals need judgement without new facts | Keep; uphold only; document as intentional scope cut |
 | D22 no idempotency | Retry = duplicate claim | **Documented** in D22; README must not advise blind retry |
 | Deferred retroactive detection | Version stamp without behaviour | Accept; test P1 only |
-| D30 Gemini extraction deferred | Unstructured claims not in demo | Keep; structured submit is in-scope intake. Extraction must not be started by putting Gemini in `domain/` |
+| D30 Gemini extraction | Unstructured HTTP not in the demo | Keep; structured submit is in-scope intake. Domain has no Gemini dependency |
+| D31 pre-adjudication extraction error | Failed extract never becomes a reviewable claim | Keep; do not invent `REV_EXTRACTION_FAILED` |
 
 ---
 
 ## 7. Remaining gaps before step 1 coding
 
-D26–D30 closed the blockers for slice 1 (deductible source, conservation scope, uphold, `HUM_UPHELD`,
-Gemini-as-extractor boundary). D30 is **not** implemented in slice 1.
+D26–D31 closed the blockers for slice 1 plus the extraction slice (deductible source, conservation
+scope, uphold, `HUM_UPHELD`, Gemini-as-extractor, pre-adjudication extraction failure). Gemini
+extraction is complete **before pricing**.
 
-Still deferred to later slices — do **not** invent defaults in slice 1:
+Still deferred to later slices — do **not** invent defaults in pricing:
 
 1. **`OVERPAID` vs accumulator invariant I2** (§2.2 E) — pick reconciliation stance when implementing settlement after appeal.
 2. **Future service date** (§2.2 I) — gate 0; recommend `REJECTED`.
 3. **Double dispute / dispute old sequence** (§2.2 J, K) — dispute use case; recommend reject both.
 4. **Zero billed amount** (§3 item 4) — validation / financial adjudication.
 5. **`Dispute.state` values, line-state derivation, unknown provider/benefit, `INFO_COVERED` appealability** — named slices in §2.2.
-6. **Gemini extraction slice** (D30, §1.12) — model id, prompts, unstructured HTTP shape, `REJECTED` vs `NEEDS_REVIEW` on failed extraction, extraction reason codes, Gemini-unavailable behaviour, raw-text persistence, payload field list. Not slice 1.
+6. **Gemini intake plumbing** — unstructured HTTP shape, raw-text persistence, PHI redaction of the Gemini payload. Not pricing.
 
 `payable` with mixed review + terminal lines is **resolved** (D27): sum `plan_paid` of current decisions that have a financial breakdown; pre-pricing / review lines contribute zero.
 

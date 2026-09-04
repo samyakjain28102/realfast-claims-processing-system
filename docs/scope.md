@@ -199,7 +199,7 @@ cheap, defensible choices — plus an honest statement of what we deliberately d
 | Model separates member identity from clinical data (diagnosis codes) | ✅ | S | A modelling stance rather than a feature — near-zero cost, and it signals the point was understood rather than merely acknowledged. |
 | A short "PHI posture" section in `docs/decisions.md` naming what we skipped and why | ✅ | S | Turns an unbuilt requirement into demonstrated judgement. |
 | Encryption at rest, field-level encryption, RBAC, consent management | ❌ | — | Auth and access control are explicitly out of scope. |
-| Minimize PHI sent to an LLM if unstructured intake is built (D30) | 🕓 | S | Cheap posture: send the minimum facts needed to extract a `Claim`; never log the key or claim contents. Exact field list deferred with §9.3. |
+| Minimize / redact PHI sent to Gemini (D30) | 🕓 | S | Extractor currently sends full raw claim text. Do not log text, prompts, responses, or the key. Redaction strategy deferred (§9.3). |
 
 ### 3.8 Interface surface
 
@@ -216,7 +216,7 @@ Minimal set that exercises every in-scope flow. **[REQ]** They will clone this a
 | Fetch the EOB for a claim | ✅ | The member-facing explanation, in one call. |
 | Inspect a member's accumulators | ✅ | Makes limit exhaustion visible in the demo instead of implied. |
 | Auto-generated OpenAPI docs | ✅ | Free with FastAPI. |
-| Unstructured / free-text claim submit (Gemini extraction) | 🕓 | Deferred (§9.3). Structured `POST /claims` stays the in-scope intake and **bypasses Gemini**. |
+| Unstructured / free-text claim submit (HTTP shape) | 🕓 | Extractor exists (D30); new field vs new endpoint is still deferred. Structured `POST /claims` **bypasses Gemini**. |
 | Web UI | ❌ | Time spent on what they told us not to build. |
 
 ---
@@ -359,45 +359,36 @@ LLM never decides coverage, pricing, or payment.
 | Family plans and aggregate accumulators (§5) | The accumulator abstraction would extend to it — scoping to member level is a data-shape simplification, not a modelling dead end. |
 | **Close review as permanently undecidable** (D25) | A line can stay in `NEEDS_REVIEW` forever if facts never suffice. Future: terminal disposition (e.g. `REV_UNRESOLVED`) or governed manual close — requires an explicit design decision, not a silent default. |
 | **Manual financial overrides** (D21) | See §9 deferred table in `decisions.md` §6. |
-| **Gemini unstructured intake** (D30) | Designed in §9.3. Structured submit stays in-scope intake. |
+| **Unstructured HTTP submit / PHI redaction / raw-text persistence** (D30) | Extractor is built (§9.3). Remaining intake plumbing is deferred. |
 
-### 9.3 Unstructured intake via Gemini (D30)
+### 9.3 Unstructured intake via Gemini (D30, D31)
 
 **The problem.** Real claims often arrive as unstructured text, not as a validated `Claim` with
 catalogued service codes. Mapping that text into line-item facts is interpretive. Computing coverage
 and payment from those facts is not.
 
-**Why it's deferred.** The take-home is scored on domain modelling, deterministic rules, and
-explanation. A live Gemini client is plumbing around the engine, not a new rule shape. Structured
-`POST /claims` already demonstrates intake. Building extraction now would spend budget on prompts,
-secrets, and vendor behaviour instead of adjudication.
-
-**What we kept so it stays possible.** The engine already consumes a canonical `Claim`. Reviewers
-already correct facts and re-adjudicate (D7, D21). `NEEDS_REVIEW` already exists for incoherent or
-undecidable cases (D2). No new domain entity is required to add an extractor in front.
-
-**Intended design if built** (`technical-plan.md` §10):
+**What is built.** An extraction-only slice (`technical-plan.md` §10, build step 2a), completed
+**before pricing**:
 
 ```
-Raw / unstructured claim
-  → Google Gemini API
-  → structured extracted facts
-  → schema / Pydantic validation
+Raw claim
+  → Gemini extraction
+  → structured / schema validation
   → canonical Claim
-  → deterministic adjudication engine
-  → decision + explanation
+  → deterministic adjudication
 ```
 
 **[DECIDED]** Gemini is used only for extraction / normalization. It must **not** decide coverage,
-pricing, deductible, limits, payment, outcome, or reason codes. The domain engine remains the source
-of truth. Gemini belongs in infrastructure / application; the domain has no Gemini dependency.
-`GEMINI_API_KEY` via environment / secrets; never hard-code or log it. Invalid or ambiguous
-extraction must not invent facts and should use the existing review flow where appropriate. Humans
-correct extracted facts; deterministic adjudication runs again. Final explanations come from
-reason-code templates, not Gemini. Already-structured claims bypass Gemini. Domain tests must not
-require live Gemini; mock the client in extraction / integration tests. Minimize sensitive claim data
-sent to the LLM; do not log PHI indiscriminately.
+pricing, deductible, limits, payment, outcome, reason codes, or authoritative explanations. The
+domain engine remains the source of truth. The domain layer has no Gemini dependency. Google Gemini
+API; `GEMINI_API_KEY` via environment only; never hard-code or log it. **[PROPOSED]** default model
+`gemini-2.5-flash`; **[PROPOSED]** temperature `0`. `claim_id` and `submitted_at` are caller-supplied.
+`quantity` is not extracted (D11). Failed or ambiguous extraction, and Gemini unavailability, are
+**pre-adjudication errors** (D31) — not `NEEDS_REVIEW`, not a new reason code. After a `Claim`
+exists, humans may correct facts and the engine re-adjudicates (D7). Final explanations come from
+reason-code templates. Already-structured claims bypass Gemini. Domain tests must not require live
+Gemini. The extractor currently sends the full raw claim text; do not log that text, prompts,
+responses, or the API key.
 
-**[DEFERRED]** Model id, prompts, unstructured HTTP shape, extraction reason codes, Gemini-unavailable
-behaviour, persistence of raw text, exact payload field list, and whether a failed extraction is
-`REJECTED` vs `NEEDS_REVIEW`. Do not invent these in the current build.
+**Still deferred:** unstructured HTTP shape, persistence of raw text / extraction artifacts, PHI
+minimization / redaction of the Gemini payload, retries / timeouts.
