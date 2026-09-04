@@ -84,7 +84,7 @@ class ServiceCatalogueEntry:
     service_code: str
     description: str
     benefit_code: str
-    scheduled_amount: Money
+    scheduled_amount: Money | None
 
     def __post_init__(self) -> None:
         if not self.service_code:

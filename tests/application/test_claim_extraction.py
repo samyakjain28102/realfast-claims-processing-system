@@ -221,7 +221,7 @@ def test_adjudicate_does_not_require_gemini_api_key(monkeypatch: pytest.MonkeyPa
         plan=Plan(
             id="plan1",
             version=3,
-            deductible=Money(50_000),
+            deductible=Money.zero(),
             benefits=(
                 Benefit(
                     code="PHYSIO",

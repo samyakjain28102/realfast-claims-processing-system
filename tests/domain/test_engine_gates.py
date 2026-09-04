@@ -45,7 +45,7 @@ def _plan(*benefits: Benefit) -> Plan:
     return Plan(
         id="plan1",
         version=3,
-        deductible=Money(50_000),
+        deductible=Money.zero(),
         benefits=benefits,
     )
 
