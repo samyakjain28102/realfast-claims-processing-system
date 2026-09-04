@@ -24,6 +24,9 @@ def test_domain_modules_import() -> None:
 def test_application_modules_import() -> None:
     for name in (
         "submit_claim",
+        "claim_queries",
+        "get_member_accumulators",
+        "read_models",
         "prior_duplicates",
         "resolve_review",
         "file_dispute",

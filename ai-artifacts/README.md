@@ -16,6 +16,7 @@ Curated Markdown summaries or screenshots do **not** substitute for raw JSONL lo
 | `8e47651d-9929-4e4e-9a5b-58424b1071a7.jsonl` | LLM architecture docs, Gemini extraction slice, D30/D31, extraction tests |
 | `414fe4c0-d180-4a12-8547-7db3bced942a.jsonl` | Adjudication e2e: pricing, accumulators, deductible, limits, lifecycle derivation, duplicate detection |
 | `f1a6817f-7e80-4f39-a427-4f9fbf281fa9.jsonl` | Subagent of 414fe4c0: pricing-stage codebase reconnaissance |
+| `14ae934f-f88d-48d8-870a-00171bee14a7.jsonl` | SQLite persistence, submit_claim use case, FastAPI boundary, demo-flow API tests |
 
 These are copies of Cursor agent transcript logs from `.cursor/projects/.../agent-transcripts/`.
 **Before each `git push`**, refresh them from that folder (see `.cursor/rules/implementation.mdc`).

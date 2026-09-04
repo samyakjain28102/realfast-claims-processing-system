@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import sqlite3
 
-from app.domain.accumulators import AccumulatorEntry, AccumulatorKey
+from app.domain.accumulators import AccumulatorEntry, AccumulatorKey, AccumulatorScope
 from app.domain.entities import (
     Claim,
     Dispute,
@@ -470,6 +470,26 @@ class AccumulatorRepository:
                 (key.member_id, key.plan_year, key.scope.value, key.benefit_code),
             ).fetchone()
         return int(row["total"])
+
+    def list_keys_for_member(self, member_id: str) -> tuple[AccumulatorKey, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT member_id, plan_year, scope, benefit_code
+            FROM accumulator_entries
+            WHERE member_id = ?
+            ORDER BY plan_year, scope, benefit_code
+            """,
+            (member_id,),
+        ).fetchall()
+        return tuple(
+            AccumulatorKey(
+                member_id=row["member_id"],
+                plan_year=row["plan_year"],
+                scope=AccumulatorScope(row["scope"]),
+                benefit_code=row["benefit_code"],
+            )
+            for row in rows
+        )
 
 
 class PaymentRepository:
