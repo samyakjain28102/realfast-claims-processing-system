@@ -319,7 +319,7 @@ message: **category**, **who absorbs the amount**, and **whether it is appealabl
 | `DEN_ANNUAL_LIMIT` — annual benefit maximum reached | member | yes |
 | `DEN_VISIT_LIMIT` — annual visit limit reached | member | yes |
 | `DEN_DUPLICATE` — confirmed duplicate of another line on this claim | member | yes |
-| `REV_UNKNOWN_SERVICE` / `REV_NO_PRICE` / `REV_SUSPECTED_DUPLICATE` | — | — |
+| `REV_UNKNOWN_SERVICE` — unknown service code / `REV_UNKNOWN_BENEFIT` — service maps to a benefit not defined on this plan / `REV_NO_PRICE` / `REV_SUSPECTED_DUPLICATE` | — | — |
 | `REJ_INVALID_CLAIM` | — | — |
 
 There is **no** `HUM_UPHELD` reason code (D29). An uphold is a `ReviewResolution` event; the

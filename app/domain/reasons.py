@@ -34,6 +34,7 @@ class ReasonCodeId(StrEnum):
     DEN_VISIT_LIMIT = "DEN_VISIT_LIMIT"
     DEN_DUPLICATE = "DEN_DUPLICATE"
     REV_UNKNOWN_SERVICE = "REV_UNKNOWN_SERVICE"
+    REV_UNKNOWN_BENEFIT = "REV_UNKNOWN_BENEFIT"
     REV_NO_PRICE = "REV_NO_PRICE"
     REV_SUSPECTED_DUPLICATE = "REV_SUSPECTED_DUPLICATE"
     REJ_INVALID_CLAIM = "REJ_INVALID_CLAIM"
@@ -117,6 +118,13 @@ REASON_CATALOGUE: dict[ReasonCodeId, ReasonCode] = {
     ReasonCodeId.REV_UNKNOWN_SERVICE: ReasonCode(
         code=ReasonCodeId.REV_UNKNOWN_SERVICE,
         message="Unknown service code",
+        category=ReasonCategory.REV,
+        liability=None,
+        appealable=None,
+    ),
+    ReasonCodeId.REV_UNKNOWN_BENEFIT: ReasonCode(
+        code=ReasonCodeId.REV_UNKNOWN_BENEFIT,
+        message="Service maps to a benefit not defined on this plan",
         category=ReasonCategory.REV,
         liability=None,
         appealable=None,

@@ -65,7 +65,7 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 |---|---|---|---|---|
 | D1 | Two identical lines (same service, date, provider) on **one** claim | Submit | Second line `DENIED`, `DEN_DUPLICATE`; first line unaffected | D8 confirmed duplicate **[DECIDED]** |
 | D2 | New claim line matches a line on a **prior** adjudicated claim | Submit | `NEEDS_REVIEW`, `REV_SUSPECTED_DUPLICATE` (not auto-deny) | D8 suspected duplicate **[DECIDED]** |
-| D3 | Same service/date/provider but **different billed amount** | Submit | **Not** a suspected duplicate; adjudicated normally | D17 **[DECIDED]** |
+| D3 | Same service/date/provider but **different billed amount** on a prior terminal line | Submit | Suspected-duplicate **key still matches** (member + provider + service + date); if the application supplies the key → `NEEDS_REVIEW`, `REV_SUSPECTED_DUPLICATE`. Billed amount is **not** part of the key. | D17 **[DECIDED]** — engine does not compare billed amounts; application must not omit keys solely because billed amounts differ |
 | D4 | Suspected duplicate resolved via fact correction (legitimate repeat) | Reviewer confirms; re-adjudicate | Line `APPROVED`; accumulators consume on resolution | D16 + D21 **[DECIDED]** |
 | D5 | Prior claim line still `NEEDS_REVIEW` | Submit matching line | **Not** flagged as suspected duplicate | D17 **[DECIDED]** |
 
