@@ -3,9 +3,11 @@
 Third in the sequence: `problem-understanding.md` (what the domain is) → `scope.md` (how much we build)
 → this (how we build it). Nothing here reopens scope.
 
-All design decisions are resolved (§8). **[DECIDED]** marks a call you made explicitly; **[PROPOSED]**
-marks one adopted by default. The reasoning is kept with each so it can be lifted into
-`docs/decisions.md` and defended in the pairing round.
+Adjudication design decisions are resolved (§8). Unstructured intake via Gemini is decided in
+principle (D30, §10) and **deferred as an implementation slice** (§7 step 13) — it does not change
+the current build. **[DECIDED]** marks a call you made explicitly; **[PROPOSED]** marks one adopted
+by default; **[DEFERRED]** is designed for, not built. The reasoning is kept with each so it can be
+lifted into `docs/decisions.md` and defended in the pairing round.
 
 ---
 
@@ -54,8 +56,10 @@ app/
     engine.py           adjudicate() — the pipeline
     states.py           claim + line state machines and derivation
   application/      # use cases: orchestration + transaction boundaries
+                    # [DEFERRED] unstructured intake: Gemini → validate → Claim → adjudicate()
     submit_claim.py, resolve_review.py, file_dispute.py, mark_paid.py, build_eob.py
   infrastructure/   # SQLite: schema, repositories, unit of work
+                    # [DEFERRED] Gemini extraction client — domain must not import this
   api/              # FastAPI routers + pydantic request/response schemas
   seed/             # fixture data + loader
 tests/
@@ -67,6 +71,11 @@ tests/
 The import rule is one-directional and worth enforcing consciously: `domain` imports nothing from
 `application`, `infrastructure`, or `api`. If it ever needs to, something has been modelled in the
 wrong place.
+
+**[DECIDED]** That rule also covers Gemini (D30, §10). `app/domain/` must never import a Gemini SDK,
+call an LLM, or read `GEMINI_API_KEY`. Extraction, if built, lives in the application /
+infrastructure shell and produces a canonical `Claim`; `adjudicate()` stays a pure function of that
+`Claim` plus `AdjudicationContext`.
 
 ---
 
@@ -340,7 +349,7 @@ Every decision carries an ordered trace — one entry per gate evaluated:
 
 The member-facing message is rendered from the reason code; the trace is the evidence underneath it.
 Both are produced by the engine at decision time — not reconstructed later, which would let them drift
-from what actually happened.
+from what actually happened. **[DECIDED]** Gemini must not generate the final explanation (D30).
 
 ---
 
@@ -509,7 +518,12 @@ Synchronous adjudication on submit: no queues, no background workers. The system
 asynchrony would be architecture for its own sake, and a synchronous response makes the demo legible.
 
 **PHI:** no member names, diagnosis codes, or claim contents in logs or error messages — identifiers
-only. Cheap, and it's the most common real leak.
+only. Cheap, and it's the most common real leak. **[DECIDED]** The same rule applies if Gemini
+extraction is built: do not log PHI indiscriminately, and minimize sensitive claim data sent to the
+LLM. The exact field list sent to Gemini is **[DEFERRED]** (§10.5).
+
+Already-structured `POST /claims` bodies remain the in-scope intake path and **bypass Gemini**. An
+unstructured submit shape is **[DEFERRED]** with the extraction slice.
 
 ---
 
@@ -519,9 +533,10 @@ only. Cheap, and it's the most common real leak.
 
 | Layer | What | Speed |
 |---|---|---|
-| `tests/domain/` | The bulk. Pure engine, table-driven, no DB | milliseconds |
+| `tests/domain/` | The bulk. Pure engine, table-driven, no DB, **no live Gemini** | milliseconds |
 | `tests/application/` | Use cases against in-memory SQLite — transactions, reversal, state recomputation | fast |
 | `tests/api/` | The three demo flows end to end | a few |
+| extraction / integration *(when §10 is built)* | Gemini client mocked; no live API in CI | fast |
 
 Named as domain statements, not mechanics:
 
@@ -568,11 +583,13 @@ of the 24–48 budget, leaving room for the overruns that will happen.
 | 10 | Disputes + both resolution paths + accumulator reversal | 3h |
 | 11 | EOB + accumulator endpoints | 2h |
 | 12 | `domain-model.md`, `decisions.md`, `self-review.md`, README walkthrough | 3h |
+| 13 | **[DEFERRED]** Gemini extraction: unstructured → validate → canonical `Claim` → existing `adjudicate()` (D30, §10) | future slice |
 
 Steps 1–7 are the pure domain and need no database at all — which means **the entire adjudication
 engine is complete and fully tested before any infrastructure exists.** That ordering is deliberate: it
 front-loads the work that's being scored, and if time runs out, what's missing is plumbing rather than
-domain.
+domain. Step 13 is **not** in the current 24–48 hour build; it must not be started by inventing
+prompts, model ids, or a new HTTP shape.
 
 Seed fixtures are built to serve the three demo flows in scope §8 directly, so the README walkthrough
 and the API tests exercise the same scenarios.
@@ -600,6 +617,7 @@ Explicitly decided:
 | 13 | Deductible amount source of truth | `Plan.deductible` only; not duplicated on `Policy` | D26 |
 | 14 | Money conservation scope | Priced decisions only; pre-pricing exits have no amount breakdown | D27 |
 | 15 | Uphold recording | `ReviewResolution.mode`; `LineDecision` keeps RULES reasons; no `HUM_UPHELD` | D29 |
+| 16 | Gemini / unstructured intake | Extraction/normalization only; engine remains source of truth; domain has no Gemini dependency | D30, §10 |
 
 Adopted by default: functional core (§1), no `units` field (§2.1), service date on the line (§2.1),
 derived claim state (§2.6), reason-code attributes (§2.7), synchronous adjudication (§5).
@@ -623,3 +641,73 @@ Not open decisions — places where the plan could go wrong in implementation an
 - **The money-conservation invariant should be written early** (§6, D27), not after the arithmetic is
   finished. It applies to priced decisions only. It's the cheapest safety net available and it only
   helps if it exists while the arithmetic is being built.
+- **Gemini must not leak into the domain while step 13 is unbuilt.** If extraction is implemented
+  later, keep `adjudicate()` unchanged: Gemini produces facts, Pydantic validates them, the engine
+  decides. Do not invent model, prompt, or endpoint details in steps 0–12.
+
+---
+
+## 10. LLM extraction architecture (future slice)
+
+**[DECIDED]** Unstructured claim intake, when built, uses Google Gemini only as an extractor (D30).
+The deterministic domain engine remains the source of truth for every coverage, pricing, and payment
+decision. This slice is **not** in the current build (steps 0–12).
+
+### 10.1 Pipeline
+
+```
+Raw / unstructured claim
+  → Google Gemini API                 # extraction / normalization only
+  → structured extracted facts
+  → schema / Pydantic validation
+  → canonical Claim                   # same type adjudicate() already consumes
+  → adjudicate(claim, ctx)            # unchanged pure function
+  → decision + explanation            # reason codes + templates; not Gemini prose
+```
+
+Already-structured submissions (today's `POST /claims` with line items) **bypass Gemini** and enter
+at the canonical `Claim`.
+
+### 10.2 What Gemini may and must not do
+
+| May | Must not |
+|---|---|
+| Extract and normalize facts into the shape of a `Claim` / `ClaimLine` | Decide coverage, pricing, deductible, limits, payment, outcome, or reason codes |
+| Leave a field absent when the source is unclear | Invent facts to make validation or adjudication succeed |
+
+Invalid or ambiguous extraction must not be repaired by guessing. It uses the **existing** review
+flow where appropriate: a human corrects facts (D7); `adjudicate()` runs again. Gemini does not
+choose `APPROVED` / `DENIED` / `NEEDS_REVIEW` and does not pick reason codes.
+
+Whether a given extraction failure is claim `REJECTED` (structurally incoherent) or line
+`NEEDS_REVIEW` is **[DEFERRED]**. Do not invent a new state machine or a new reason code for this
+slice until it is designed.
+
+Final member-facing explanations come from the engine's reason codes and templates, not from Gemini.
+
+### 10.3 Layering
+
+**[DECIDED]** Gemini belongs in the infrastructure / application boundary. `app/domain/` has **no**
+Gemini dependency — no SDK import, no HTTP call, no prompt, no API key.
+
+**[PROPOSED]** A thin Gemini client in `infrastructure/`; orchestration (call → validate → map to
+`Claim` → `adjudicate()`) in `application/`. Exact module names are **[DEFERRED]**.
+
+### 10.4 Secrets, PHI, tests
+
+- **[DECIDED]** `GEMINI_API_KEY` from environment / secrets only. Never hard-code. Never log the key.
+- **[DECIDED]** Minimize sensitive claim data sent to the LLM. Do not log PHI indiscriminately
+  (identifiers only, consistent with §5). The exact payload field list is **[DEFERRED]**.
+- **[DECIDED]** Core domain tests must not require live Gemini calls. Mock Gemini in extraction /
+  integration tests when this slice is built.
+
+### 10.5 Still open for this slice
+
+**[DEFERRED]** — do not invent these in steps 0–12:
+
+- Gemini model id, prompts, temperature, retries, timeouts
+- Unstructured HTTP shape (new field vs new endpoint)
+- Persistence of raw text and extraction artifacts
+- Behaviour when Gemini is unavailable
+- Extraction-specific reason codes (if any) vs reuse of existing `REV_*` / `REJ_*` codes
+- Exact minimization list of fields sent to Gemini

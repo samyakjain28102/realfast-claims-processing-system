@@ -90,6 +90,21 @@ Anything in the first category must be redesigned, escalated to
 NEEDS_REVIEW, or explicitly approved by the human with the risk
 documented in docs/decisions.md.
 
+### LLM extraction boundary
+
+If unstructured intake is implemented, Google Gemini may extract or
+normalize claim facts. It must not decide coverage, pricing,
+deductible, limits, payment, outcome, or reason codes.
+
+- The deterministic domain engine remains the source of truth.
+- `app/domain/` must have no Gemini dependency.
+- Invalid or ambiguous extraction must not invent facts; use the
+  existing NEEDS_REVIEW / fact-correction flow, then re-adjudicate.
+- Final explanations come from deterministic reason codes, not Gemini.
+- Core domain tests must not require live Gemini calls.
+
+See `docs/decisions.md` D30 and `docs/technical-plan.md` §10.
+
 ## Decision Making
 
 For significant decisions:

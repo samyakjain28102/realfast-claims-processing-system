@@ -107,6 +107,24 @@ it identifies exactly where the system can go wrong: it is the only mutable stat
 over, and therefore the only place needing a lock, an invariant, and a ledger. Everything else in the
 model can be reasoned about one claim at a time.
 
+### 2.5 Canonical claim and unstructured intake
+
+The engine's only claim input is a validated `Claim`. How that object was obtained — a structured API
+body, or **[DEFERRED]** Gemini extraction (D30) — is outside the domain model. Extraction is not an
+entity, does not produce outcomes or amounts, and does not choose reason codes.
+
+**[DECIDED]** If unstructured intake is built:
+
+- Gemini may extract and normalize facts into `Claim` / `ClaimLine` fields.
+- Schema / Pydantic validation sits between extracted facts and the canonical `Claim`.
+- `adjudicate()` is unchanged. The domain has no Gemini dependency.
+- Invalid or ambiguous extraction must not invent facts; it uses the existing review / fact-correction
+  path (D7, D21) where appropriate.
+- Already-structured claims bypass Gemini.
+
+Exact extraction schema, HTTP shape, and whether a failed extraction is `REJECTED` vs `NEEDS_REVIEW`
+are **[DEFERRED]**. Do not add an `ExtractedClaim` entity until that slice is designed.
+
 ---
 
 ## 3. State machines
@@ -356,6 +374,8 @@ before commit that refuses to persist any decision that would push a balance pas
 ## 6. Explanation
 
 Every decision carries reason codes and a trace, produced by the engine at decision time.
+**[DECIDED]** Member-facing explanation text is rendered from those reason codes and templates, not
+from Gemini or any other LLM (D30).
 
 A `ReasonCode` carries three things beyond its message: **who absorbs the amount** (member or plan),
 **whether it is appealable**, and its category. "Applied to your deductible" assigns cost to the member
@@ -394,7 +414,8 @@ current. Re-adjudication: reverse superseded terminal entries, post new terminal
 5. **Every decision carries at least one reason code.** A decision without an explanation is a bug.
 6. **Every accumulator entry references the decision that caused it.** No orphan consumption.
 7. **A dispute may only target a reason marked appealable.**
-8. **Determinism:** identical inputs produce identical decisions and traces. *(test)*
+8. **Determinism:** identical inputs produce identical decisions and traces. *(test)* The engine
+   does not call Gemini; LLM non-determinism is not an input to `adjudicate()`.
 9. **Re-adjudication uses the original `plan_version`** unless a deferred retroactive workflow explicitly
    applies a different version (D18).
 
@@ -416,6 +437,7 @@ Alternatives that were considered and rejected. The rejections carry more inform
 | **Coverage rules as a DSL or free-form expressions** | More impressive-looking, less defensible. Typed objects seeded from data give the same "new plan = new data" property, and can be walked through under pressure without a parser. |
 | **Service date on the claim** | Would need a special case for claims spanning a plan-year boundary, or would quietly get it wrong. On the line, it needs neither. |
 | **A single claim lifecycle ending in `PAID`** | The chain the problem statement sketches, and it breaks on the ordinary case of a member disputing a denied line after the claim was paid: the plan then owes more on a claim in a terminal state. Separating adjudication from settlement (§3.2) makes that case fall out with no special handling. |
+| **LLM as adjudicator** | Gemini (or any LLM) producing coverage, amounts, outcomes, or reason codes would make payment non-deterministic. Extraction, when built, stops at validated claim facts (D30). |
 
 ---
 
@@ -431,6 +453,8 @@ Terms are used in the code exactly as they are used here.
 | **Deductible** | What the member pays before the plan starts paying, policy-wide per plan year |
 | **Accumulator** | Running total of a quantity consumed against a limit, per member, benefit and plan year |
 | **Adjudication** | Applying coverage rules to a line item to produce a payable amount and a reason |
+| **Canonical claim** | A validated `Claim` — the only input the engine accepts, regardless of intake path |
+| **Extraction** | **[DEFERRED]** Optional intake step: unstructured text → Gemini → validated claim facts. Not adjudication |
 | **Confirmed duplicate** | An exact repeat within one claim — a fact the system can assert |
 | **Suspected duplicate** | A match across claims — a question the system raises for a human |
 | **Plan year** | Calendar year |

@@ -256,6 +256,32 @@ longer say why the plan said no. D21 requires all monetary outcomes `source=RULE
 `HUM_UPHELD` is removed from the reason catalogue. `ReviewResolution.mode` records that the reviewer
 upheld. The appended `LineDecision` carries the RULES reason the engine produces.
 
+### D30 — Gemini extracts facts; the engine decides
+**Alternatives:** let Gemini produce coverage outcomes, amounts, or explanations; put a Gemini client
+in the domain layer; skip unstructured intake entirely with no recorded boundary. **Why:** an LLM is
+non-deterministic. Using it to decide coverage, pricing, deductible, limits, payment, outcome, or
+reason codes would make the same claim pay differently on two runs — the failure mode D2 and
+`.cursor/rules/project.mdc` exist to prevent. Extraction/normalization is a bounded, reviewable
+mapping into existing `Claim` fields; adjudication stays a pure function of those fields. **Consequence:**
+
+- Pipeline, when built: unstructured claim → Gemini → structured facts → Pydantic/schema validation →
+  canonical `Claim` → `adjudicate()` → decision + explanation.
+- Gemini lives in infrastructure / application. `app/domain/` has no Gemini dependency.
+- `GEMINI_API_KEY` from environment / secrets only; never hard-coded or logged.
+- Invalid or ambiguous extraction must not invent facts; use the existing review / fact-correction
+  flow (D7, D21) where appropriate, then re-adjudicate.
+- Already-structured claims bypass Gemini.
+- Final explanations come from deterministic reason codes / templates, not Gemini.
+- Domain tests never require live Gemini; mock the client in extraction / integration tests.
+- Minimize sensitive claim data sent to the LLM; do not log PHI indiscriminately (see §7).
+
+This slice is **deferred** (`scope.md` §9.3, `technical-plan.md` §7 step 13 / §10). Implementation
+details not listed above — model id, prompts, unstructured HTTP shape, extraction reason codes,
+Gemini-unavailable behaviour — remain **[DEFERRED]** and must not be invented in the current build.
+
+This is a different LLM use from retroactive-change *triage* in §6 / `scope.md` §9.1. Both share the
+same rule: the LLM never computes a number the member is paid.
+
 ---
 
 ## 3. Deliberate departures from real-world practice
@@ -375,6 +401,8 @@ Real-world complexity deliberately flattened. Each is a modelling choice, not an
     breakdown.
 19. **Uphold is dispute-only** (D28). `NEEDS_REVIEW` without a dispute is resolved by fact correction.
 20. **Uphold is recorded on `ReviewResolution`**, not as a `LineDecision` reason (D29).
+21. **Gemini, if used, extracts and normalizes facts only** (D30). The engine remains the source of
+    truth. Unstructured intake is deferred (`scope.md` §9.3).
 
 ---
 
@@ -400,10 +428,13 @@ rule shape the model already demonstrates.
 | Manual financial/computed-value overrides (D21) | Fact correction + rules engine | Non-deterministic; needs `HUMAN_OVERRIDE` audit model — future scope |
 | Close review as permanently undecidable (D25) | Lines can remain in `NEEDS_REVIEW` indefinitely | Judgement without facts; needs terminal disposition reason or governed override — future scope |
 | Submission idempotency (D22) | — | Retry may duplicate claims — future scope |
-| Submission idempotency (D22) | — | Correctness risk documented; not needed to demonstrate domain modelling |
+| Gemini unstructured intake (D30) | Structured `POST /claims` bypasses Gemini; engine unchanged | Extractor is non-deterministic; keep it off the decision path. Slice designed in `technical-plan.md` §10 |
 
 Retroactive policy changes: detect, surface, route to review; never auto-reverse. If an LLM is ever used
 there, it may triage and propose; a human approves; deterministic rules compute every number.
+
+Unstructured intake, if built, uses Gemini the same way: **extract facts, never decide**. That is D30,
+not a second adjudication engine.
 
 ---
 
@@ -415,7 +446,9 @@ and access control are explicitly out of scope, so this cannot mean building sec
 - **Member identity and clinical data are separate entities.** Diagnosis codes live on `ClaimLine`, never
   on `Member`, so the join between "who this is" and "what is wrong with them" is explicit.
 - **No PHI in logs or error messages** — identifiers only. The most common real leak, and nearly free
-  to avoid.
+  to avoid. **[DECIDED]** The same rule applies to Gemini (D30): do not log PHI indiscriminately, and
+  minimize sensitive claim data sent to the LLM. The exact payload field list is deferred with the
+  extraction slice.
 - **Every decision and state transition is audited**, with the actor recorded. Review resolutions
   (fact corrections, uphold) are distinguishable from rules-derived decisions via `ReviewResolution` and
   `LineDecision.source=RULES` on all monetary outcomes.
@@ -428,8 +461,8 @@ use. In a real deployment these would matter more than anything in §4.
 
 ## 8. Open
 
-No open design decisions from D1–D29. Remaining items from the pre-implementation review are
-**deferred to the implementation slice that needs them**, not product-scope questions:
+No open *adjudication* design decisions from D1–D30. Remaining items from the pre-implementation
+review are **deferred to the implementation slice that needs them**, not product-scope questions:
 
 - Future service date — gate 0
 - Zero billed amount — validation / financial adjudication
@@ -440,6 +473,17 @@ No open design decisions from D1–D29. Remaining items from the pre-implementat
 - `INFO_COVERED` appealability — dispute use case
 - `OVERPAID` vs limit invariant I2 — still a documented gap; pick a reconciliation stance when
   implementing settlement after appeal
+
+D30 is decided in principle; these extraction details stay **[DEFERRED]** until `technical-plan.md`
+§7 step 13:
+
+- Gemini model id, prompts, retries, timeouts
+- Unstructured HTTP shape
+- Whether a failed / ambiguous extraction is claim `REJECTED` or line `NEEDS_REVIEW`
+- Extraction-specific reason codes (if any)
+- Persistence of raw unstructured text and extraction artifacts
+- Behaviour when Gemini is unavailable
+- Exact field list minimized for the Gemini payload
 
 This document and `docs/domain-model.md` were written before implementation, and every claim in them is
 re-verified against `app/` before submission. Anything the code does differently gets corrected here
