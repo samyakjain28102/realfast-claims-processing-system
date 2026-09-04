@@ -6,6 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.application.claim_queries import ClaimNotFoundError, MemberNotFoundError
+from app.application.file_dispute import (
+    DisputeAlreadyOpenError,
+    DisputeLineNotFoundError,
+    DisputeNotAppealableError,
+    FileDisputeError,
+    LineNotDisputableError,
+)
 from app.application.resolve_review import (
     InvalidCorrectionError,
     InvalidResolveRequestError,
@@ -141,4 +148,49 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=400,
             content={"detail": "Review could not be resolved"},
+        )
+
+    @app.exception_handler(DisputeLineNotFoundError)
+    async def dispute_line_not_found(
+        _request: Request, _exc: DisputeLineNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Line not found"},
+        )
+
+    @app.exception_handler(DisputeNotAppealableError)
+    async def dispute_not_appealable(
+        _request: Request, _exc: DisputeNotAppealableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Line is not appealable"},
+        )
+
+    @app.exception_handler(DisputeAlreadyOpenError)
+    async def dispute_already_open(
+        _request: Request, _exc: DisputeAlreadyOpenError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "A dispute is already open"},
+        )
+
+    @app.exception_handler(LineNotDisputableError)
+    async def line_not_disputable(
+        _request: Request, _exc: LineNotDisputableError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Line cannot be disputed"},
+        )
+
+    @app.exception_handler(FileDisputeError)
+    async def file_dispute_error(
+        _request: Request, _exc: FileDisputeError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Dispute could not be filed"},
         )

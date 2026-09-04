@@ -262,6 +262,12 @@ class LineFactCorrectionsRequest(BaseModel):
         return self
 
 
+class FileDisputeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    member_reason: str = Field(min_length=1)
+
+
 class ResolveReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
