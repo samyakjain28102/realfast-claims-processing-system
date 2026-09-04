@@ -31,12 +31,28 @@ from app.domain.states import DecisionSource, LineOutcome
 
 @dataclass(frozen=True, slots=True)
 class SuspectedDuplicateKey:
-    """Cross-claim duplicate match key (D17) — billed amount excluded."""
+    """Duplicate identity (D17): member + provider + service + date. No billed amount."""
 
     member_id: str
     provider_id: str
     service_code: str
     service_date: date
+
+
+def duplicate_identity(
+    *,
+    member_id: str,
+    provider_id: str,
+    service_code: str,
+    service_date: date,
+) -> SuspectedDuplicateKey:
+    """Build the D17 key. Cross-claim lookup happens outside the engine."""
+    return SuspectedDuplicateKey(
+        member_id=member_id,
+        provider_id=provider_id,
+        service_code=service_code,
+        service_date=service_date,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +128,7 @@ def adjudicate(claim: Claim, ctx: AdjudicationContext) -> AdjudicationResult:
         )
 
     lines = tuple(sorted(claim.lines, key=lambda line: line.line_number))
-    seen_confirmed_keys: set[tuple[str, date, str]] = set()
+    seen_confirmed_keys: set[SuspectedDuplicateKey] = set()
     line_results: list[LineAdjudicationResult] = []
     working_consumed: dict[AccumulatorKey, int] = dict(ctx.accumulator_consumed)
     deltas: list[AccumulatorEntry] = []
@@ -179,12 +195,8 @@ def _validate_claim_structure(
     return None
 
 
-def _confirmed_duplicate_key(line: ClaimLine) -> tuple[str, date, str]:
-    return (line.service_code, line.service_date, line.provider_id)
-
-
-def _suspected_duplicate_key(claim: Claim, line: ClaimLine) -> SuspectedDuplicateKey:
-    return SuspectedDuplicateKey(
+def _duplicate_key(claim: Claim, line: ClaimLine) -> SuspectedDuplicateKey:
+    return duplicate_identity(
         member_id=claim.member_id,
         provider_id=line.provider_id,
         service_code=line.service_code,
@@ -197,7 +209,7 @@ def _adjudicate_line(
     claim: Claim,
     line: ClaimLine,
     ctx: AdjudicationContext,
-    seen_confirmed_keys: set[tuple[str, date, str]],
+    seen_confirmed_keys: set[SuspectedDuplicateKey],
 ) -> LineDecision | LinePricing:
     trace: list[TraceStep] = []
     plan_version = ctx.plan.version
@@ -233,7 +245,7 @@ def _adjudicate_line(
     )
 
     # Gate 2 — confirmed duplicate within claim
-    confirmed_key = _confirmed_duplicate_key(line)
+    confirmed_key = _duplicate_key(claim, line)
     if confirmed_key in seen_confirmed_keys:
         trace.append(
             _trace_step(
@@ -241,9 +253,10 @@ def _adjudicate_line(
                 rule="CLAIM.duplicate_line",
                 plan_version=plan_version,
                 inputs={
+                    "member_id": claim.member_id,
+                    "provider_id": line.provider_id,
                     "service_code": line.service_code,
                     "service_date": line.service_date.isoformat(),
-                    "provider_id": line.provider_id,
                 },
                 result="duplicate",
             )
@@ -262,9 +275,10 @@ def _adjudicate_line(
             rule="CLAIM.duplicate_line",
             plan_version=plan_version,
             inputs={
+                "member_id": claim.member_id,
+                "provider_id": line.provider_id,
                 "service_code": line.service_code,
                 "service_date": line.service_date.isoformat(),
-                "provider_id": line.provider_id,
             },
             result="pass",
         )
@@ -272,7 +286,7 @@ def _adjudicate_line(
     seen_confirmed_keys.add(confirmed_key)
 
     # Gate 3 — suspected duplicate from prior claims
-    suspected_key = _suspected_duplicate_key(claim, line)
+    suspected_key = _duplicate_key(claim, line)
     if suspected_key in ctx.suspected_duplicate_keys:
         trace.append(
             _trace_step(
