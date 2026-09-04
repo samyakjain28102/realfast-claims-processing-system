@@ -76,7 +76,7 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 | S1 | Line `DENIED` with appealable reason | Member files dispute | Line `UNDER_APPEAL`; original decision immutable (new sequence only after resolution) | D4 append-only **[DECIDED]** |
 | S2 | Line `APPROVED` with only `MEM_DEDUCTIBLE` | Member files dispute | **Rejected** — non-appealable | Reason-code appealable flag **[DECIDED]** |
 | S3 | Claim `SETTLED`; denied line disputed | File dispute | Adjudication → `UNDER_REVIEW`; settlement stays `SETTLED` | D15 split axes **[DECIDED]** |
-| S4 | Dispute upheld | Reviewer upholds | Whole claim re-adjudicated; original denial stands; dispute closed; ledger unchanged | D21 uphold **[DECIDED]** |
+| S4 | Dispute upheld | Reviewer upholds | Whole claim re-adjudicated; original denial stands with RULES reason (e.g. `DEN_EXCLUDED`); `ReviewResolution` records uphold; dispute closed; ledger unchanged | D21 + D28 + D29 **[DECIDED]** |
 | S5 | Dispute overturned via **corrected facts** | Reviewer supplies facts; re-adjudicate | New `LineDecision` `source=RULES`; ledger posts if terminal approval | D21 + D18 **[DECIDED]** |
 | S6 | Post-payment dispute succeeds; `payable` > `paid` | (no new payment yet) | Settlement → `DUE`; supplementary payment allowed | D15 supplementary payment **[DECIDED]** |
 | S7 | Appeal **reduces** `plan_paid` after claim `SETTLED` | Overturn partial approval downward | Settlement → `OVERPAID`; no clawback | D15 OVERPAID surfaced **[DECIDED]** |
@@ -96,6 +96,7 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 | R8 | First correction still `NEEDS_REVIEW`; second correction succeeds | Two resolve calls, same endpoint | Claim stays `UNDER_REVIEW` after first; terminal after second; **two** `LineDecision` sequences for affected line | D23 **[DECIDED]** |
 | R9 | Re-adjudication still `NEEDS_REVIEW` after correction | Resolve once | New `LineDecision` appended with **updated** reason/trace/inputs; `sequence` incremented; prior decision immutable | D24 **[DECIDED]** |
 | R10 | Reviewer attempts "close as undecidable" | Resolve API | **Not supported** — no terminal outcome without rules; claim stays `UNDER_REVIEW` | D25 **[DECIDED]** deferred |
+| R11 | Line `NEEDS_REVIEW`, no dispute | Resolve with `mode=uphold` | **Rejected** — uphold is dispute-only | D28 **[DECIDED]** |
 
 ### 1.7 Retroactive policy changes
 
@@ -155,9 +156,9 @@ Each row is a test case. **Validates** names the invariant or decision under tes
 
 ## 2. Contradictions & ambiguities
 
-Updated after D16–D22. Resolved items marked ✅; remaining **[GAP]** items still need a call.
+Updated after D16–D29. Resolved items marked ✅; remaining items are deferred to a named implementation slice.
 
-### 2.1 Resolved (D16–D22)
+### 2.1 Resolved (D16–D29)
 
 | # | Was | Resolution |
 |---|---|---|
@@ -170,18 +171,30 @@ Updated after D16–D22. Resolved items marked ✅; remaining **[GAP]** items st
 | **H** | Payment amount rules | ✅ **D20** — exact payable only |
 | **Path B** | Manual monetary overrides | ✅ **D21** — out of scope; rules-only outcomes |
 | **Review loop** | Iterative resolve; append on each attempt; no permanent undecidable close | ✅ **D23, D24, D25** |
+| **Deductible field** | `Policy.deductible` vs `Plan.deductible` | ✅ **D26** — `Plan.deductible` is the single source of truth |
+| **Conservation scope** | Invariant on every decision vs pre-pricing exits | ✅ **D27** — priced decisions only; pre-pricing exits have no amount breakdown; `payable` sums priced `plan_paid` only |
+| **Uphold target** | Close review or dispute | ✅ **D28** — dispute-only |
+| **HUM_UPHELD** | Reason code on `LineDecision` | ✅ **D29** — removed; `ReviewResolution.mode` records uphold; `LineDecision` keeps RULES reasons |
 
-### 2.2 Still open — need decision before or during implementation
+### 2.2 Deferred to the implementation slice that needs them
 
-| # | Issue | Why it matters | Recommendation |
+Not product-scope reopenings. Call them in the named slice; recommended behaviour is recorded so
+slice 1 does not invent a default.
+
+| # | Issue | Slice | Recommendation |
 |---|---|---|---|
-| **E** | **`OVERPAID` ledger drift** A7 / S7 | Payable drops after settlement; ledger still shows old consumption; limit invariant I2 may conflict | **[GAP]** — pick: (a) `OVERPAID` exempts further limit enforcement for that claim, or (b) require manual reconciliation workflow. Surface in API either way. |
-| **I** | **Future service date** V2 | Docs say "reject or review" | **[GAP]** — recommend **`REJECTED`** at claim level (deterministic). |
-| **J** | **Double dispute** S8 | Two appeals on one line | **[GAP]** — recommend **reject if dispute already open**. |
-| **K** | **Dispute targets old sequence** S9 | Appeal against superseded decision | **[GAP]** — recommend **reject; dispute current decision only**. |
-| **L** | **`covered=false` AND `excluded=true` in seed** | Gate 5 fires before gate 6 | Seed discipline only — don't seed contradictory benefits. |
-| **M5-detail** | **Terminal sibling lines while one line in review** | D16: only review/appeal lines withhold; terminal siblings post on submit | ✅ Documented in `technical-plan.md` §2.5 — **needs explicit test (M5)** |
-| **N** | **Judgement-only disputes without correctable facts** | D21 + D25: only uphold or better facts; no permanent close | ✅ By design — demo needs fact-based overturn |
+| **E** | **`OVERPAID` ledger drift** A7 / S7 | Settlement after appeal | **[GAP]** — pick: (a) `OVERPAID` exempts further limit enforcement for that claim, or (b) require manual reconciliation workflow. Surface in API either way. |
+| **I** | **Future service date** V2 | Gate 0 | Recommend **`REJECTED`** at claim level (deterministic). |
+| **J** | **Double dispute** S8 | Dispute use case | Recommend **reject if dispute already open**. |
+| **K** | **Dispute targets old sequence** S9 | Dispute use case | Recommend **reject; dispute current decision only**. |
+| **L** | **`covered=false` AND `excluded=true` in seed** | Seed data | Seed discipline only — don't seed contradictory benefits. |
+| **M5-detail** | **Terminal sibling lines while one line in review** | Accumulator posting | ✅ Documented in `technical-plan.md` §2.5 — **needs explicit test (M5)** |
+| **N** | **Judgement-only disputes without correctable facts** | Disputes | ✅ D21 + D25 + D28 — only uphold (on dispute) or better facts; no permanent close |
+| **Zero billed** | Approve-with-zeros vs structural reject | Validation / financial adjudication | Pick in that slice; do not invent in slice 1. |
+| **Dispute.state** | Values unnamed | Dispute domain | Define with the dispute use case. |
+| **Line state vs outcome** | `UNDER_APPEAL` is not a decision outcome | State derivation | Derived from current decision + open dispute. |
+| **Unknown provider / benefit** | No gate specified | Validation / catalogue lookup | Do not invent a rule in advance; surface when implementing lookup. |
+| **INFO_COVERED appealability** | Catalogue shows "—" | Dispute use case | Resolve when implementing disputes. |
 
 ### 2.3 Documentation drift (cosmetic)
 
@@ -194,10 +207,10 @@ Updated after D16–D22. Resolved items marked ✅; remaining **[GAP]** items st
 
 ## 3. Missing high-risk edge cases
 
-Still worth explicit tests even after D16–D22:
+Still worth explicit tests even after D16–D29:
 
 1. **Fact-based overturn when limit now exhausted** — corrected facts re-adjudicate to partial/zero pay; rules decide, not human (D21).
-2. **Terminal sibling consumes while sibling in review** — line 2 `APPROVED` posts ledger; line 1 in `NEEDS_REVIEW` does not; payable sums terminal lines only.
+2. **Terminal sibling consumes while sibling in review** — line 2 `APPROVED` posts ledger; line 1 in `NEEDS_REVIEW` does not; `payable` sums priced `plan_paid` only (D27).
 3. **Whole-claim re-adjudication changes earlier terminal line** — rare but possible if working balance order shifts; ledger reversal on all superseded terminal decisions (D16, D19).
 4. **Zero billed amount** — allowed 0; outcome `APPROVED` with zeros vs structural `REJECTED` — pick one.
 5. **Policy terminates mid-claim** — line 1 eligible, line 2 after termination → mixed claim.
@@ -217,7 +230,7 @@ Non-negotiable. Violation = bug, not edge case.
 
 | ID | Invariant | Enforcement |
 |---|---|---|
-| I1 | **Money conservation:** `billed == above_allowed + deductible_applied + plan_paid + denied_amount` per line | Property test on every decision |
+| I1 | **Money conservation:** `billed == above_allowed + deductible_applied + plan_paid + denied_amount` on decisions that reached pricing | Property test on priced decisions only (D27). Pre-pricing exits have no breakdown. |
 | I2 | **No silent limit breach:** sum of `plan_paid` ledger for benefit key in plan year ≤ annual limit | Pre-commit check; abort → review |
 | I3 | **No silent deductible breach:** deductible ledger ≤ plan deductible | Pre-commit check |
 | I4 | **Visit count ≤ annual visit limit** after commit | Pre-commit check |
@@ -251,7 +264,7 @@ Ordered for TDD and maximum risk reduction per test. **Write these before infras
 
 | Priority | Test | IDs | Why first |
 |---|---|---|---|
-| 1 | Money conservation property on random/simple lines | I1 | Catches every arithmetic bug |
+| 1 | Money conservation property on random/simple **priced** lines | I1, D27 | Catches every arithmetic bug |
 | 2 | Deductible-only line → `APPROVED`, `plan_paid=0` | H2 | Most common modelling mistake |
 | 3 | Limit boundary partial approval | H5 | Core scored edge case |
 | 4 | Two lines, one limit — working balance | M4, I17 | Silent overspend without DB |
@@ -332,12 +345,16 @@ Not proposals to reopen scope — places a skeptical reviewer would push back.
 
 ## 7. Remaining gaps before step 1 coding
 
-D16–D22 resolved the major design gaps. D23–D25 resolved review-loop behaviour. Still open:
+D26–D29 closed the blockers for slice 1 (deductible source, conservation scope, uphold, `HUM_UPHELD`).
 
-1. **`OVERPAID` vs accumulator invariant I2** (§2.2 E) — pick reconciliation stance.
-2. **Future service date** (§2.2 I) — recommend `REJECTED`.
-3. **Double dispute / dispute old sequence** (§2.2 J, K) — recommend reject both.
-4. **Zero billed amount** (§3 item 4) — structural reject vs approve-with-zeros.
-5. **Payable definition with mixed review + terminal lines** — sum `plan_paid` of current terminal decisions only; exclude review lines.
+Still deferred to later slices — do **not** invent defaults in slice 1:
+
+1. **`OVERPAID` vs accumulator invariant I2** (§2.2 E) — pick reconciliation stance when implementing settlement after appeal.
+2. **Future service date** (§2.2 I) — gate 0; recommend `REJECTED`.
+3. **Double dispute / dispute old sequence** (§2.2 J, K) — dispute use case; recommend reject both.
+4. **Zero billed amount** (§3 item 4) — validation / financial adjudication.
+5. **`Dispute.state` values, line-state derivation, unknown provider/benefit, `INFO_COVERED` appealability** — named slices in §2.2.
+
+`payable` with mixed review + terminal lines is **resolved** (D27): sum `plan_paid` of current decisions that have a financial breakdown; pre-pricing / review lines contribute zero.
 
 None expand feature scope.

@@ -1,0 +1,1 @@
+-- SQLite schema. Implementation: build step 8.
