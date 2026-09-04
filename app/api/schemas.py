@@ -5,14 +5,18 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.states import ReviewResolutionMode
 from app.application.read_models import (
     AccumulatorBalanceView,
     AmountBreakdownView,
     ClaimLineView,
     ClaimSummaryView,
     ClaimView,
+    EobLineView,
+    EobPaymentView,
+    EobView,
     LineDecisionView,
     MemberAccumulatorsView,
     ReasonView,
@@ -233,6 +237,139 @@ class MemberAccumulatorsResponse(BaseModel):
                 for balance in view.balances
             ),
         )
+
+
+class LineFactCorrectionsRequest(BaseModel):
+    """Facts a reviewer may correct. Computed amounts and outcomes are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service_code: str | None = None
+    service_date: date | None = None
+    provider_id: str | None = None
+    billed_amount_minor: int | None = Field(default=None, ge=0)
+    diagnosis_code: str | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> LineFactCorrectionsRequest:
+        if not any(
+            (
+                self.service_code is not None,
+                self.service_date is not None,
+                self.provider_id is not None,
+                self.billed_amount_minor is not None,
+                self.diagnosis_code is not None,
+            )
+        ):
+            raise ValueError("at least one correction field is required")
+        return self
+
+
+class FileDisputeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    member_reason: str = Field(min_length=1)
+
+
+class RecordPaymentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(ge=1)
+    reference: str = Field(min_length=1)
+    paid_at: datetime | None = None
+
+
+class EobPaymentResponse(BaseModel):
+    id: str
+    amount_minor: int
+    paid_at: datetime
+    reference: str
+
+    @classmethod
+    def from_view(cls, view: EobPaymentView) -> EobPaymentResponse:
+        return cls(
+            id=view.id,
+            amount_minor=view.amount_minor,
+            paid_at=view.paid_at,
+            reference=view.reference,
+        )
+
+
+class EobLineResponse(BaseModel):
+    line_number: int
+    service_code: str
+    service_date: date
+    billed_minor: int
+    line_state: str
+    outcome: str | None
+    explanations: tuple[ReasonResponse, ...]
+    amounts: AmountBreakdownResponse | None
+
+    @classmethod
+    def from_view(cls, view: EobLineView) -> EobLineResponse:
+        return cls(
+            line_number=view.line_number,
+            service_code=view.service_code,
+            service_date=view.service_date,
+            billed_minor=view.billed_minor,
+            line_state=view.line_state,
+            outcome=view.outcome,
+            explanations=tuple(
+                ReasonResponse.from_view(item) for item in view.explanations
+            ),
+            amounts=(
+                None
+                if view.amounts is None
+                else AmountBreakdownResponse.from_view(view.amounts)
+            ),
+        )
+
+
+class EobResponse(BaseModel):
+    claim_id: str
+    member_id: str
+    adjudication_state: str
+    settlement_state: str
+    billed_minor: int
+    payable_minor: int
+    paid_minor: int
+    member_responsibility_minor: int
+    lines: tuple[EobLineResponse, ...]
+    payments: tuple[EobPaymentResponse, ...]
+
+    @classmethod
+    def from_view(cls, view: EobView) -> EobResponse:
+        return cls(
+            claim_id=view.claim_id,
+            member_id=view.member_id,
+            adjudication_state=view.adjudication_state,
+            settlement_state=view.settlement_state,
+            billed_minor=view.billed_minor,
+            payable_minor=view.payable_minor,
+            paid_minor=view.paid_minor,
+            member_responsibility_minor=view.member_responsibility_minor,
+            lines=tuple(EobLineResponse.from_view(line) for line in view.lines),
+            payments=tuple(
+                EobPaymentResponse.from_view(payment) for payment in view.payments
+            ),
+        )
+
+
+class ResolveReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ReviewResolutionMode
+    reviewer_id: str = Field(min_length=1)
+    note: str = Field(min_length=1)
+    corrections: LineFactCorrectionsRequest | None = None
+
+    @model_validator(mode="after")
+    def mode_matches_corrections(self) -> ResolveReviewRequest:
+        if self.mode is ReviewResolutionMode.CORRECT_FACTS and self.corrections is None:
+            raise ValueError("corrections are required when mode is CORRECT_FACTS")
+        if self.mode is ReviewResolutionMode.UPHOLD and self.corrections is not None:
+            raise ValueError("uphold must not include corrections")
+        return self
 
 
 class ErrorResponse(BaseModel):

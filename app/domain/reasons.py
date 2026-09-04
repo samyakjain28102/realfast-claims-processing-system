@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -156,3 +157,8 @@ REASON_CATALOGUE: dict[ReasonCodeId, ReasonCode] = {
 def get_reason(code: ReasonCodeId) -> ReasonCode:
     """Return the catalogue entry for a reason code."""
     return REASON_CATALOGUE[code]
+
+
+def has_appealable_reason(reasons: Iterable[ReasonCodeId]) -> bool:
+    """True if any reason is explicitly appealable. False/None do not qualify."""
+    return any(get_reason(code).appealable is True for code in reasons)

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from app.api.errors import register_exception_handlers
 from app.api.routers.claims import router as claims_router
 from app.api.routers.members import router as members_router
+from app.api.routers.reviews import router as reviews_router
 from app.infrastructure.db import SqliteDatabase, open_database
 
 
@@ -22,6 +23,7 @@ def create_app(*, db: SqliteDatabase | None = None) -> FastAPI:
     register_exception_handlers(app)
     app.include_router(claims_router)
     app.include_router(members_router)
+    app.include_router(reviews_router)
     return app
 
 
