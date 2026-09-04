@@ -35,5 +35,8 @@ def test_application_modules_import() -> None:
 
 def test_infrastructure_and_api_import() -> None:
     importlib.import_module("app.infrastructure")
+    importlib.import_module("app.infrastructure.db")
+    importlib.import_module("app.infrastructure.mapping")
+    importlib.import_module("app.infrastructure.repositories")
     importlib.import_module("app.api.main")
     importlib.import_module("app.seed.load")
