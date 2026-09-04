@@ -189,7 +189,8 @@ def test_confirmed_duplicate_denies_second_line_only() -> None:
     result = adjudicate(claim, _ctx())
     line1 = next(r for r in result.line_results if r.line_id == "line1")
     line2 = next(r for r in result.line_results if r.line_id == "line2")
-    assert line1.cleared_for_pricing is True
+    assert line1.decision is not None
+    assert line1.decision.outcome is LineOutcome.APPROVED
     assert line2.decision is not None
     assert line2.decision.outcome is LineOutcome.DENIED
     assert line2.decision.reasons == (ReasonCodeId.DEN_DUPLICATE,)
@@ -221,7 +222,8 @@ def test_suspected_duplicate_key_ignores_billed_amount_d17() -> None:
 def test_no_suspected_duplicate_keys_clears_line() -> None:
     claim = _claim(_line(billed_amount=Money(9_999)))
     result = adjudicate(claim, _ctx(suspected_duplicate_keys=frozenset()))
-    assert result.line_results[0].cleared_for_pricing is True
+    assert result.line_results[0].decision is not None
+    assert result.line_results[0].decision.outcome is LineOutcome.APPROVED
 
 
 # --- Gate 4 ---
@@ -246,8 +248,9 @@ def test_mapped_covered_benefit_passes_gate_5() -> None:
     claim = _claim(_line())
     result = adjudicate(claim, _ctx())
     line_result = result.line_results[0]
-    assert line_result.cleared_for_pricing is True
-    assert line_result.decision is None
+    assert line_result.decision is not None
+    assert line_result.decision.outcome is LineOutcome.APPROVED
+    assert ReasonCodeId.DEN_NOT_COVERED not in line_result.decision.reasons
 
 
 def test_unmapped_benefit_routes_to_needs_review() -> None:
@@ -293,8 +296,9 @@ def test_line_passing_gates_0_through_6_is_cleared_for_pricing() -> None:
     claim = _claim(_line())
     result = adjudicate(claim, _ctx())
     line_result = result.line_results[0]
-    assert line_result.cleared_for_pricing is True
-    assert line_result.decision is None
+    assert line_result.decision is not None
+    assert line_result.decision.outcome is LineOutcome.APPROVED
+    assert ReasonCodeId.DEN_NOT_COVERED not in line_result.decision.reasons
 
 
 def test_unknown_service_stops_before_confirmed_duplicate_check() -> None:

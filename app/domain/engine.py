@@ -1,4 +1,4 @@
-"""Adjudication engine — pure function, gates 0–7 plus deductible."""
+"""Adjudication engine — pure function, gates 0–9."""
 
 from __future__ import annotations
 
@@ -67,6 +67,8 @@ class LinePricing:
     above_allowed: Money
     scheduled_amount: Money
     trace: TraceStep
+    benefit: Benefit
+    steps: tuple[TraceStep, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +101,7 @@ class AdjudicationResult:
 
 
 def adjudicate(claim: Claim, ctx: AdjudicationContext) -> AdjudicationResult:
-    """Apply gates 0–7 and deductible. Limits await a later slice."""
+    """Apply gates 0–9. Lines are processed in line_number order with working balances."""
     rejection = _validate_claim_structure(claim, ctx)
     if rejection is not None:
         return AdjudicationResult(
@@ -122,7 +124,7 @@ def adjudicate(claim: Claim, ctx: AdjudicationContext) -> AdjudicationResult:
             seen_confirmed_keys=seen_confirmed_keys,
         )
         if isinstance(line_eval, LinePricing):
-            deductible, decision, new_entries = _apply_deductible(
+            deductible, decision, new_entries = _finalize_priced_line(
                 claim=claim,
                 line=line,
                 ctx=ctx,
@@ -459,11 +461,14 @@ def _adjudicate_line(
         },
         result="pass",
     )
+    trace.append(pricing_step)
     return LinePricing(
         allowed=allowed,
         above_allowed=above_allowed,
         scheduled_amount=scheduled_amount,
         trace=pricing_step,
+        benefit=benefit,
+        steps=tuple(trace),
     )
 
 
@@ -476,24 +481,111 @@ def _deductible_key(member_id: str, service_date: date) -> AccumulatorKey:
     )
 
 
-def _apply_deductible(
+def _benefit_amount_key(
+    member_id: str, service_date: date, benefit_code: str
+) -> AccumulatorKey:
+    return AccumulatorKey(
+        member_id=member_id,
+        plan_year=service_date.year,
+        scope=AccumulatorScope.BENEFIT_AMOUNT,
+        benefit_code=benefit_code,
+    )
+
+
+def _benefit_visits_key(
+    member_id: str, service_date: date, benefit_code: str
+) -> AccumulatorKey:
+    return AccumulatorKey(
+        member_id=member_id,
+        plan_year=service_date.year,
+        scope=AccumulatorScope.BENEFIT_VISITS,
+        benefit_code=benefit_code,
+    )
+
+
+def _finalize_priced_line(
     *,
     claim: Claim,
     line: ClaimLine,
     ctx: AdjudicationContext,
     pricing: LinePricing,
     working_consumed: dict[AccumulatorKey, int],
-) -> tuple[DeductibleComputation, LineDecision | None, tuple[AccumulatorEntry, ...]]:
-    key = _deductible_key(claim.member_id, line.service_date)
-    consumed = working_consumed.get(key, 0)
-    applied_units, consumed_after = apply_quantity(
+) -> tuple[DeductibleComputation | None, LineDecision, tuple[AccumulatorEntry, ...]]:
+    benefit = pricing.benefit
+    steps = list(pricing.steps)
+
+    visit_key: AccumulatorKey | None = None
+    if benefit.annual_visit_limit is not None:
+        visit_key = _benefit_visits_key(
+            claim.member_id, line.service_date, benefit.code
+        )
+        visits_used = working_consumed.get(visit_key, 0)
+        if visits_used >= benefit.annual_visit_limit:
+            steps.append(
+                _trace_step(
+                    step="visit_limit",
+                    rule=f"BENEFIT.{benefit.code}.annual_visit_limit",
+                    plan_version=ctx.plan.version,
+                    inputs={
+                        "visits_used": visits_used,
+                        "visit_limit": benefit.annual_visit_limit,
+                    },
+                    result="denied",
+                    accumulator_before=visits_used,
+                    accumulator_after=visits_used,
+                )
+            )
+            amounts = DecisionAmounts(
+                allowed=pricing.allowed,
+                above_allowed=pricing.above_allowed,
+                deductible_applied=Money.zero(),
+                plan_paid=Money.zero(),
+                denied_amount=pricing.allowed,
+            )
+            amounts.check_conservation(line.billed_amount)
+            reasons: list[ReasonCodeId] = []
+            if pricing.above_allowed.minor_units > 0:
+                reasons.append(ReasonCodeId.MEM_ABOVE_ALLOWED)
+            reasons.append(ReasonCodeId.DEN_VISIT_LIMIT)
+            return (
+                None,
+                _line_decision(
+                    claim=claim,
+                    line=line,
+                    ctx=ctx,
+                    outcome=LineOutcome.DENIED,
+                    reasons=tuple(reasons),
+                    trace=steps,
+                    amounts=amounts,
+                ),
+                (),
+            )
+        working_consumed[visit_key] = visits_used + 1
+        steps.append(
+            _trace_step(
+                step="visit_limit",
+                rule=f"BENEFIT.{benefit.code}.annual_visit_limit",
+                plan_version=ctx.plan.version,
+                inputs={
+                    "visits_used": visits_used,
+                    "visit_limit": benefit.annual_visit_limit,
+                },
+                result="pass",
+                accumulator_before=visits_used,
+                accumulator_after=visits_used + 1,
+            )
+        )
+
+    deductible_key = _deductible_key(claim.member_id, line.service_date)
+    deductible_consumed = working_consumed.get(deductible_key, 0)
+    applied_units, deductible_after = apply_quantity(
         limit=ctx.plan.deductible.minor_units,
-        consumed=consumed,
+        consumed=deductible_consumed,
         requested=pricing.allowed.minor_units,
     )
-    working_consumed[key] = consumed_after
-    remaining_before = max(0, ctx.plan.deductible.minor_units - consumed)
-    remaining_after = max(0, ctx.plan.deductible.minor_units - consumed_after)
+    working_consumed[deductible_key] = deductible_after
+    remaining_before = max(0, ctx.plan.deductible.minor_units - deductible_consumed)
+    remaining_after = max(0, ctx.plan.deductible.minor_units - deductible_after)
     after_units = pricing.allowed.minor_units - applied_units
 
     if applied_units == 0:
@@ -514,9 +606,10 @@ def _apply_deductible(
             "deductible_applied": applied_units,
         },
         result=deductible_result,
-        accumulator_before=consumed,
-        accumulator_after=consumed_after,
+        accumulator_before=deductible_consumed,
+        accumulator_after=deductible_after,
     )
+    steps.append(deductible_step)
     deductible = DeductibleComputation(
         applied=Money(applied_units),
         remaining_before=Money(remaining_before),
@@ -525,42 +618,116 @@ def _apply_deductible(
         trace=deductible_step,
     )
 
-    # Zero allowed is not "absorbed by deductible"; do not invent APPROVED.
-    if after_units != 0 or pricing.allowed.minor_units == 0:
-        return deductible, None, ()
+    amount_key: AccumulatorKey | None = None
+    if benefit.annual_limit_amount is None:
+        plan_paid_units = after_units
+        amount_consumed = 0
+        amount_after = 0
+    else:
+        amount_key = _benefit_amount_key(
+            claim.member_id, line.service_date, benefit.code
+        )
+        amount_consumed = working_consumed.get(amount_key, 0)
+        plan_paid_units, amount_after = apply_quantity(
+            limit=benefit.annual_limit_amount.minor_units,
+            consumed=amount_consumed,
+            requested=after_units,
+        )
+        working_consumed[amount_key] = amount_after
+        limit_remaining = max(
+            0, benefit.annual_limit_amount.minor_units - amount_consumed
+        )
+        denied_preview = after_units - plan_paid_units
+        if denied_preview == 0:
+            dollar_result = "pass"
+        elif plan_paid_units == 0:
+            dollar_result = "denied"
+        else:
+            dollar_result = "partial"
+        steps.append(
+            _trace_step(
+                step="annual_dollar_limit",
+                rule=f"BENEFIT.{benefit.code}.annual_limit_amount",
+                plan_version=ctx.plan.version,
+                inputs={
+                    "after_deductible": after_units,
+                    "limit_remaining": limit_remaining,
+                    "plan_paid": plan_paid_units,
+                    "denied_amount": denied_preview,
+                },
+                result=dollar_result,
+                accumulator_before=amount_consumed,
+                accumulator_after=amount_after,
+            )
+        )
 
-    reasons: list[ReasonCodeId] = []
-    if pricing.above_allowed.minor_units > 0:
-        reasons.append(ReasonCodeId.MEM_ABOVE_ALLOWED)
-    reasons.append(ReasonCodeId.MEM_DEDUCTIBLE)
+    denied_units = after_units - plan_paid_units
     amounts = DecisionAmounts(
         allowed=pricing.allowed,
         above_allowed=pricing.above_allowed,
         deductible_applied=Money(applied_units),
-        plan_paid=Money.zero(),
-        denied_amount=Money.zero(),
+        plan_paid=Money(plan_paid_units),
+        denied_amount=Money(denied_units),
     )
     amounts.check_conservation(line.billed_amount)
+
+    if denied_units > 0 and plan_paid_units == 0 and applied_units == 0:
+        outcome = LineOutcome.DENIED
+    elif denied_units > 0:
+        outcome = LineOutcome.PARTIALLY_APPROVED
+    else:
+        outcome = LineOutcome.APPROVED
+
+    reasons: list[ReasonCodeId] = []
+    if pricing.above_allowed.minor_units > 0:
+        reasons.append(ReasonCodeId.MEM_ABOVE_ALLOWED)
+    if applied_units > 0:
+        reasons.append(ReasonCodeId.MEM_DEDUCTIBLE)
+    if denied_units > 0:
+        reasons.append(ReasonCodeId.DEN_ANNUAL_LIMIT)
+    elif plan_paid_units > 0:
+        reasons.append(ReasonCodeId.INFO_COVERED)
+    if not reasons:
+        reasons.append(ReasonCodeId.INFO_COVERED)
+
     decision = _line_decision(
         claim=claim,
         line=line,
         ctx=ctx,
-        outcome=LineOutcome.APPROVED,
+        outcome=outcome,
         reasons=tuple(reasons),
-        trace=[pricing.trace, deductible_step],
+        trace=steps,
         amounts=amounts,
     )
-    entries: tuple[AccumulatorEntry, ...] = ()
+    entries: list[AccumulatorEntry] = []
     if applied_units > 0:
-        entries = (
+        entries.append(
             AccumulatorEntry(
                 id=f"{decision.id}:DEDUCTIBLE",
-                key=key,
+                key=deductible_key,
                 quantity=applied_units,
                 decision_id=decision.id,
-            ),
+            )
         )
-    return deductible, decision, entries
+    if plan_paid_units > 0 and amount_key is not None:
+        entries.append(
+            AccumulatorEntry(
+                id=f"{decision.id}:BENEFIT_AMOUNT",
+                key=amount_key,
+                quantity=plan_paid_units,
+                decision_id=decision.id,
+            )
+        )
+    if visit_key is not None:
+        entries.append(
+            AccumulatorEntry(
+                id=f"{decision.id}:BENEFIT_VISITS",
+                key=visit_key,
+                quantity=1,
+                decision_id=decision.id,
+            )
+        )
+    return deductible, decision, tuple(entries)
 
 
 def _policy_active_on(policy: Policy, service_date: date) -> bool:

@@ -110,12 +110,17 @@ def test_deductible_fully_unmet_applies_none_of_allowed() -> None:
     ctx = _ctx(accumulator_consumed={_deductible_key(): 10_000})
     result = adjudicate(_claim(_line()), ctx)
     line_result = result.line_results[0]
-    assert line_result.decision is None
     assert line_result.deductible is not None
     assert line_result.deductible.applied == Money.zero()
     assert line_result.deductible.after_deductible == Money(4_000)
     assert line_result.deductible.trace.result == "met"
-    assert result.accumulator_deltas == ()
+    assert line_result.decision is not None
+    assert line_result.decision.amounts is not None
+    assert line_result.decision.amounts.plan_paid == Money(4_000)
+    assert not any(
+        delta.key.scope is AccumulatorScope.DEDUCTIBLE
+        for delta in result.accumulator_deltas
+    )
 
 
 def test_deductible_partially_consumed_leaves_remainder_for_later_gates() -> None:
@@ -125,12 +130,14 @@ def test_deductible_partially_consumed_leaves_remainder_for_later_gates() -> Non
     ))
     result = adjudicate(_claim(_line(billed_amount=Money(4_000))), ctx)
     line_result = result.line_results[0]
-    assert line_result.decision is None
     assert line_result.deductible is not None
     assert line_result.deductible.applied == Money(1_000)
     assert line_result.deductible.after_deductible == Money(3_000)
     assert line_result.deductible.trace.result == "partial"
-    assert result.accumulator_deltas == ()
+    assert line_result.decision is not None
+    assert line_result.decision.amounts is not None
+    assert line_result.decision.amounts.plan_paid == Money(3_000)
+    assert line_result.decision.outcome is LineOutcome.APPROVED
 
 
 def test_deductible_fully_absorbs_allowed_amount() -> None:
@@ -149,9 +156,14 @@ def test_deductible_fully_absorbs_allowed_amount() -> None:
     assert line_result.deductible.trace.result == "absorbed"
     assert line_result.deductible.trace.accumulator_before == 0
     assert line_result.deductible.trace.accumulator_after == 4_000
-    assert len(result.accumulator_deltas) == 1
-    assert result.accumulator_deltas[0].key == _deductible_key()
-    assert result.accumulator_deltas[0].quantity == 4_000
+    deductible_deltas = [
+        delta
+        for delta in result.accumulator_deltas
+        if delta.key.scope is AccumulatorScope.DEDUCTIBLE
+    ]
+    assert len(deductible_deltas) == 1
+    assert deductible_deltas[0].key == _deductible_key()
+    assert deductible_deltas[0].quantity == 4_000
 
 
 def test_deductible_is_shared_across_benefits() -> None:
@@ -182,12 +194,13 @@ def test_deductible_is_shared_across_benefits() -> None:
     assert diagnostics.deductible.applied == Money(400)
     assert diagnostics.deductible.remaining_before == Money(600)
     assert diagnostics.deductible.remaining_after == Money(200)
-    assert all(delta.key.benefit_code is None for delta in result.accumulator_deltas)
-    assert all(
-        delta.key.scope is AccumulatorScope.DEDUCTIBLE
+    deductible_deltas = [
+        delta
         for delta in result.accumulator_deltas
-    )
-    assert sum(delta.quantity for delta in result.accumulator_deltas) == 800
+        if delta.key.scope is AccumulatorScope.DEDUCTIBLE
+    ]
+    assert all(delta.key.benefit_code is None for delta in deductible_deltas)
+    assert sum(delta.quantity for delta in deductible_deltas) == 800
 
 
 def test_deductible_does_not_consume_benefit_dollar_limit() -> None:
@@ -202,9 +215,9 @@ def test_deductible_does_not_consume_benefit_dollar_limit() -> None:
     assert result.line_results[0].decision is not None
     assert result.line_results[0].decision.amounts is not None
     assert result.line_results[0].decision.amounts.plan_paid == Money.zero()
-    assert [delta.key.scope for delta in result.accumulator_deltas] == [
-        AccumulatorScope.DEDUCTIBLE
-    ]
+    assert AccumulatorScope.BENEFIT_AMOUNT not in {
+        delta.key.scope for delta in result.accumulator_deltas
+    }
     assert benefit_key not in {delta.key for delta in result.accumulator_deltas}
     assert ctx.accumulator_consumed[benefit_key] == 50_000
 

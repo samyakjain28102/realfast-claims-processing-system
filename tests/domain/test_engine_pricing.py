@@ -95,9 +95,10 @@ def test_billed_below_scheduled_allows_billed_amount() -> None:
     claim = _claim(_line(billed_amount=Money(3_000)))
     result = adjudicate(claim, _ctx())
     line_result = result.line_results[0]
-    assert line_result.decision is None
-    assert line_result.cleared_for_pricing is True
     assert line_result.pricing is not None
+    assert line_result.decision is not None
+    assert line_result.decision.amounts is not None
+    assert line_result.decision.amounts.allowed == Money(3_000)
     assert line_result.pricing.allowed == Money(3_000)
     assert line_result.pricing.above_allowed == Money.zero()
     assert line_result.pricing.scheduled_amount == Money(4_000)
@@ -149,12 +150,14 @@ def test_missing_schedule_routes_to_needs_review() -> None:
 
 
 def test_zero_billed_amount_prices_to_zero() -> None:
-    """Zero billed is a pricing input, not a structural rejection or invented outcome."""
+    """Zero billed is a pricing input, not a structural rejection."""
     claim = _claim(_line(billed_amount=Money.zero()))
     result = adjudicate(claim, _ctx())
     line_result = result.line_results[0]
-    assert line_result.decision is None
     assert line_result.pricing is not None
     assert line_result.pricing.allowed == Money.zero()
     assert line_result.pricing.above_allowed == Money.zero()
     assert line_result.pricing.trace.result == "pass"
+    assert line_result.decision is not None
+    assert line_result.decision.amounts is not None
+    line_result.decision.amounts.check_conservation(Money.zero())

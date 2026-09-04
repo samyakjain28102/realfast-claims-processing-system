@@ -247,4 +247,4 @@ def test_adjudicate_does_not_require_gemini_api_key(monkeypatch: pytest.MonkeyPa
     )
     result = adjudicate(claim, ctx)
     assert result.rejected is False
-    assert result.line_results[0].cleared_for_pricing is True
+    assert result.line_results[0].decision is not None
