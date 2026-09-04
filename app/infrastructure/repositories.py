@@ -296,6 +296,15 @@ class ClaimRepository:
                 stored.append(record)
         return tuple(stored)
 
+    def find_by_line_id(self, line_id: str) -> StoredClaim | None:
+        row = self._conn.execute(
+            "SELECT claim_id FROM claim_lines WHERE id = ?",
+            (line_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self.get(row["claim_id"])
+
     def update_line_facts(
         self, line_id: str, corrections: LineFactCorrections
     ) -> None:
@@ -470,6 +479,24 @@ class AccumulatorRepository:
                 (key.member_id, key.plan_year, key.scope.value, key.benefit_code),
             ).fetchone()
         return int(row["total"])
+
+    def list_for_decision(self, decision_id: str) -> tuple[AccumulatorEntry, ...]:
+        rows = self._conn.execute(
+            "SELECT * FROM accumulator_entries WHERE decision_id = ?",
+            (decision_id,),
+        ).fetchall()
+        return tuple(accumulator_entry_from_row(row) for row in rows)
+
+    def is_reversed(self, entry_id: str) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM accumulator_entries
+            WHERE reverses_entry_id = ?
+            LIMIT 1
+            """,
+            (entry_id,),
+        ).fetchone()
+        return row is not None
 
     def list_keys_for_member(self, member_id: str) -> tuple[AccumulatorKey, ...]:
         rows = self._conn.execute(

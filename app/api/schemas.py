@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.states import ReviewResolutionMode
 from app.application.read_models import (
     AccumulatorBalanceView,
     AmountBreakdownView,
@@ -233,6 +234,49 @@ class MemberAccumulatorsResponse(BaseModel):
                 for balance in view.balances
             ),
         )
+
+
+class LineFactCorrectionsRequest(BaseModel):
+    """Facts a reviewer may correct. Computed amounts and outcomes are rejected."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service_code: str | None = None
+    service_date: date | None = None
+    provider_id: str | None = None
+    billed_amount_minor: int | None = Field(default=None, ge=0)
+    diagnosis_code: str | None = None
+
+    @model_validator(mode="after")
+    def at_least_one_field(self) -> LineFactCorrectionsRequest:
+        if not any(
+            (
+                self.service_code is not None,
+                self.service_date is not None,
+                self.provider_id is not None,
+                self.billed_amount_minor is not None,
+                self.diagnosis_code is not None,
+            )
+        ):
+            raise ValueError("at least one correction field is required")
+        return self
+
+
+class ResolveReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: ReviewResolutionMode
+    reviewer_id: str = Field(min_length=1)
+    note: str = Field(min_length=1)
+    corrections: LineFactCorrectionsRequest | None = None
+
+    @model_validator(mode="after")
+    def mode_matches_corrections(self) -> ResolveReviewRequest:
+        if self.mode is ReviewResolutionMode.CORRECT_FACTS and self.corrections is None:
+            raise ValueError("corrections are required when mode is CORRECT_FACTS")
+        if self.mode is ReviewResolutionMode.UPHOLD and self.corrections is not None:
+            raise ValueError("uphold must not include corrections")
+        return self
 
 
 class ErrorResponse(BaseModel):

@@ -6,6 +6,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.application.claim_queries import ClaimNotFoundError, MemberNotFoundError
+from app.application.resolve_review import (
+    InvalidCorrectionError,
+    InvalidResolveRequestError,
+    LineNotFoundError,
+    LineNotInReviewError,
+    ResolveReviewError,
+    UpholdNotAllowedError,
+)
 from app.application.submit_claim import (
     AccumulatorLimitExceededError,
     PlanNotFoundError,
@@ -79,4 +87,58 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=400,
             content={"detail": "Claim could not be submitted"},
+        )
+
+    @app.exception_handler(LineNotFoundError)
+    async def review_line_not_found(
+        _request: Request, _exc: LineNotFoundError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=404,
+            content={"detail": "Line not found"},
+        )
+
+    @app.exception_handler(LineNotInReviewError)
+    async def review_line_not_in_review(
+        _request: Request, _exc: LineNotInReviewError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Line is not awaiting review"},
+        )
+
+    @app.exception_handler(UpholdNotAllowedError)
+    async def review_uphold_not_allowed(
+        _request: Request, _exc: UpholdNotAllowedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Uphold requires an open dispute"},
+        )
+
+    @app.exception_handler(InvalidCorrectionError)
+    async def review_invalid_correction(
+        _request: Request, _exc: InvalidCorrectionError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Correction would invalidate the claim"},
+        )
+
+    @app.exception_handler(InvalidResolveRequestError)
+    async def review_invalid_request(
+        _request: Request, _exc: InvalidResolveRequestError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid review resolution request"},
+        )
+
+    @app.exception_handler(ResolveReviewError)
+    async def review_resolve_error(
+        _request: Request, _exc: ResolveReviewError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Review could not be resolved"},
         )

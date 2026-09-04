@@ -153,17 +153,31 @@ def _load_plan(db: SqliteDatabase, policy: Policy) -> Plan:
 
 
 def _load_suspected_duplicate_keys(
-    db: SqliteDatabase, member_id: str
+    db: SqliteDatabase,
+    member_id: str,
+    *,
+    exclude_claim_id: str | None = None,
 ) -> frozenset[SuspectedDuplicateKey]:
-    rows = db.connection.execute(
-        """
-        SELECT c.member_id, cl.provider_id, cl.service_code, cl.service_date, cl.id
-        FROM claim_lines cl
-        JOIN claims c ON c.id = cl.claim_id
-        WHERE c.member_id = ? AND c.rejected = 0
-        """,
-        (member_id,),
-    ).fetchall()
+    if exclude_claim_id is None:
+        rows = db.connection.execute(
+            """
+            SELECT c.member_id, cl.provider_id, cl.service_code, cl.service_date, cl.id
+            FROM claim_lines cl
+            JOIN claims c ON c.id = cl.claim_id
+            WHERE c.member_id = ? AND c.rejected = 0
+            """,
+            (member_id,),
+        ).fetchall()
+    else:
+        rows = db.connection.execute(
+            """
+            SELECT c.member_id, cl.provider_id, cl.service_code, cl.service_date, cl.id
+            FROM claim_lines cl
+            JOIN claims c ON c.id = cl.claim_id
+            WHERE c.member_id = ? AND c.rejected = 0 AND c.id != ?
+            """,
+            (member_id, exclude_claim_id),
+        ).fetchall()
     anchors: list[PriorLineAnchor] = []
     for row in rows:
         decision = db.decisions.current_for_line(row["id"])
