@@ -6,6 +6,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.application.claim_queries import ClaimNotFoundError, MemberNotFoundError
+from app.application.record_payment import (
+    PaymentAmountMismatchError,
+    PaymentNotAllowedError,
+    PaymentWhileUnderReviewError,
+    RecordPaymentError,
+)
 from app.application.file_dispute import (
     DisputeAlreadyOpenError,
     DisputeLineNotFoundError,
@@ -193,4 +199,40 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=400,
             content={"detail": "Dispute could not be filed"},
+        )
+
+    @app.exception_handler(PaymentWhileUnderReviewError)
+    async def payment_under_review(
+        _request: Request, _exc: PaymentWhileUnderReviewError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Payment is not allowed while the claim is under review"},
+        )
+
+    @app.exception_handler(PaymentAmountMismatchError)
+    async def payment_amount_mismatch(
+        _request: Request, _exc: PaymentAmountMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Payment must equal the amount due"},
+        )
+
+    @app.exception_handler(PaymentNotAllowedError)
+    async def payment_not_allowed(
+        _request: Request, _exc: PaymentNotAllowedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Payment is not allowed"},
+        )
+
+    @app.exception_handler(RecordPaymentError)
+    async def record_payment_error(
+        _request: Request, _exc: RecordPaymentError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Payment could not be recorded"},
         )

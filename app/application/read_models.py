@@ -97,3 +97,39 @@ class AccumulatorBalanceView:
 class MemberAccumulatorsView:
     member_id: str
     balances: tuple[AccumulatorBalanceView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EobPaymentView:
+    id: str
+    amount_minor: int
+    paid_at: datetime
+    reference: str
+
+
+@dataclass(frozen=True, slots=True)
+class EobLineView:
+    line_number: int
+    service_code: str
+    service_date: date
+    billed_minor: int
+    line_state: str
+    outcome: str | None
+    explanations: tuple[ReasonView, ...]
+    amounts: AmountBreakdownView | None
+
+
+@dataclass(frozen=True, slots=True)
+class EobView:
+    """Member-facing summary assembled from current decisions and payments."""
+
+    claim_id: str
+    member_id: str
+    adjudication_state: str
+    settlement_state: str
+    billed_minor: int
+    payable_minor: int
+    paid_minor: int
+    member_responsibility_minor: int
+    lines: tuple[EobLineView, ...]
+    payments: tuple[EobPaymentView, ...]

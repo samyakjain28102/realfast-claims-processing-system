@@ -30,6 +30,7 @@ def test_application_modules_import() -> None:
         "prior_duplicates",
         "resolve_review",
         "file_dispute",
+        "record_payment",
         "mark_paid",
         "build_eob",
     ):

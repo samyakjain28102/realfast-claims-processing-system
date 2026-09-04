@@ -9,11 +9,15 @@ from app.api.schemas import (
     ClaimListResponse,
     ClaimResponse,
     ClaimSummaryResponse,
+    EobResponse,
     FileDisputeRequest,
+    RecordPaymentRequest,
     SubmitClaimRequest,
 )
+from app.application.build_eob import build_eob
 from app.application.claim_queries import get_claim, list_claims_for_member
 from app.application.file_dispute import file_dispute
+from app.application.record_payment import record_payment
 from app.application.submit_claim import submit_claim
 from app.domain.entities import Claim, ClaimLine
 from app.domain.money import Money
@@ -79,6 +83,34 @@ def post_line_dispute(
         member_reason=body.member_reason,
     )
     return ClaimResponse.from_view(get_claim(db, claim_id))
+
+
+@router.post(
+    "/{claim_id}/payments",
+    response_model=ClaimResponse,
+    status_code=201,
+)
+def post_claim_payment(
+    claim_id: str,
+    body: RecordPaymentRequest,
+    db: SqliteDatabase = Depends(get_db),
+) -> ClaimResponse:
+    record_payment(
+        db,
+        claim_id=claim_id,
+        amount=Money(body.amount_minor),
+        reference=body.reference,
+        paid_at=body.paid_at,
+    )
+    return ClaimResponse.from_view(get_claim(db, claim_id))
+
+
+@router.get("/{claim_id}/eob", response_model=EobResponse)
+def get_claim_eob(
+    claim_id: str,
+    db: SqliteDatabase = Depends(get_db),
+) -> EobResponse:
+    return EobResponse.from_view(build_eob(db, claim_id))
 
 
 @router.get("", response_model=ClaimListResponse)

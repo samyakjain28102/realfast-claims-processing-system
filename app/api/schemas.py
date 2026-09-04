@@ -14,6 +14,9 @@ from app.application.read_models import (
     ClaimLineView,
     ClaimSummaryView,
     ClaimView,
+    EobLineView,
+    EobPaymentView,
+    EobView,
     LineDecisionView,
     MemberAccumulatorsView,
     ReasonView,
@@ -266,6 +269,90 @@ class FileDisputeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     member_reason: str = Field(min_length=1)
+
+
+class RecordPaymentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    amount_minor: int = Field(ge=1)
+    reference: str = Field(min_length=1)
+    paid_at: datetime | None = None
+
+
+class EobPaymentResponse(BaseModel):
+    id: str
+    amount_minor: int
+    paid_at: datetime
+    reference: str
+
+    @classmethod
+    def from_view(cls, view: EobPaymentView) -> EobPaymentResponse:
+        return cls(
+            id=view.id,
+            amount_minor=view.amount_minor,
+            paid_at=view.paid_at,
+            reference=view.reference,
+        )
+
+
+class EobLineResponse(BaseModel):
+    line_number: int
+    service_code: str
+    service_date: date
+    billed_minor: int
+    line_state: str
+    outcome: str | None
+    explanations: tuple[ReasonResponse, ...]
+    amounts: AmountBreakdownResponse | None
+
+    @classmethod
+    def from_view(cls, view: EobLineView) -> EobLineResponse:
+        return cls(
+            line_number=view.line_number,
+            service_code=view.service_code,
+            service_date=view.service_date,
+            billed_minor=view.billed_minor,
+            line_state=view.line_state,
+            outcome=view.outcome,
+            explanations=tuple(
+                ReasonResponse.from_view(item) for item in view.explanations
+            ),
+            amounts=(
+                None
+                if view.amounts is None
+                else AmountBreakdownResponse.from_view(view.amounts)
+            ),
+        )
+
+
+class EobResponse(BaseModel):
+    claim_id: str
+    member_id: str
+    adjudication_state: str
+    settlement_state: str
+    billed_minor: int
+    payable_minor: int
+    paid_minor: int
+    member_responsibility_minor: int
+    lines: tuple[EobLineResponse, ...]
+    payments: tuple[EobPaymentResponse, ...]
+
+    @classmethod
+    def from_view(cls, view: EobView) -> EobResponse:
+        return cls(
+            claim_id=view.claim_id,
+            member_id=view.member_id,
+            adjudication_state=view.adjudication_state,
+            settlement_state=view.settlement_state,
+            billed_minor=view.billed_minor,
+            payable_minor=view.payable_minor,
+            paid_minor=view.paid_minor,
+            member_responsibility_minor=view.member_responsibility_minor,
+            lines=tuple(EobLineResponse.from_view(line) for line in view.lines),
+            payments=tuple(
+                EobPaymentResponse.from_view(payment) for payment in view.payments
+            ),
+        )
 
 
 class ResolveReviewRequest(BaseModel):
