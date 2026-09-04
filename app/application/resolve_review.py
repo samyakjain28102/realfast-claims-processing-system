@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -20,6 +21,7 @@ from app.domain.engine import AdjudicationContext, AdjudicationResult, adjudicat
 from app.domain.entities import (
     Claim,
     ClaimLine,
+    Dispute,
     LineDecision,
     LineFactCorrections,
     ReviewResolution,
@@ -34,7 +36,7 @@ from app.domain.states import (
     ReviewResolutionMode,
     SettlementState,
 )
-from app.infrastructure.db import SqliteDatabase
+from app.infrastructure.db import SqliteDatabase, is_sqlite_lock_error
 
 
 class ResolveReviewError(Exception):
@@ -113,105 +115,37 @@ def resolve_review(
     target_dispute = open_disputes[0] if open_disputes else None
     closing_line_id = line_id if target_dispute is not None else None
 
-    db.begin_immediate()
-    try:
-        policy = _load_policy(db, original_claim)
-        plan_version = _original_plan_version(db, original_claim.id)
-        plan = db.plans.get(policy.plan_id, plan_version)
-        if plan is None:
-            raise PlanNotFoundError(
-                f"plan {policy.plan_id} version {plan_version} not found"
+    while True:
+        try:
+            db.begin_immediate()
+        except sqlite3.OperationalError as exc:
+            if is_sqlite_lock_error(exc):
+                continue
+            raise
+        try:
+            result, new_decisions, new_by_line, resolution = _resolve_review_tx(
+                db,
+                original_claim=original_claim,
+                working_claim=working_claim,
+                line_id=line_id,
+                mode=mode,
+                reviewer_id=reviewer_id,
+                note=note,
+                corrections=corrections,
+                decided_at=decided_at,
+                target_dispute=target_dispute,
+                closing_line_id=closing_line_id,
             )
-        catalogue = db.catalogue.as_mapping()
-        to_reverse = _unreversed_original_entries(db, original_claim.id)
-        consumed = _starting_balances(
-            db, working_claim, plan, catalogue, to_reverse
-        )
-        suspected_keys = _load_suspected_duplicate_keys(
-            db, working_claim.member_id, exclude_claim_id=original_claim.id
-        )
-        ctx = AdjudicationContext(
-            policy=policy,
-            plan=plan,
-            catalogue=catalogue,
-            suspected_duplicate_keys=suspected_keys,
-            as_of=original_claim.submitted_at.date(),
-            decided_at=decided_at,
-            accumulator_consumed=consumed,
-        )
-        result = adjudicate(working_claim, ctx)
-        if result.rejected:
-            raise InvalidCorrectionError(original_claim.id)
-
-        current_by_line: dict[str, LineDecision] = {}
-        for line in original_claim.lines:
-            existing = db.decisions.current_for_line(line.id)
-            if existing is None:
-                raise LineNotInReviewError(line_id)
-            current_by_line[line.id] = existing
-        new_decisions, reminted_deltas = _assign_sequences(
-            result, current_by_line
-        )
-        new_by_line = {decision.line_id: decision for decision in new_decisions}
-        old_decision_line = {
-            decision.id: decision.line_id
-            for line in original_claim.lines
-            for decision in db.decisions.list_for_line(line.id)
-        }
-        reversals = tuple(
-            compensating_entry(
-                entry,
-                id=f"{new_by_line[old_decision_line[entry.decision_id]].id}"
-                f":REV:{entry.id}",
-                decision_id=new_by_line[old_decision_line[entry.decision_id]].id,
-            )
-            for entry in to_reverse
-        )
-        posted = _postable_deltas(
-            reminted_deltas,
-            new_by_line=new_by_line,
-            db=db,
-            closing_line_id=closing_line_id,
-        )
-        if corrections is not None:
-            db.claims.update_line_facts(line_id, corrections)
-        for decision in new_decisions:
-            db.decisions.add(decision)
-        for entry in reversals:
-            db.accumulators.add(entry)
-        for entry in posted:
-            db.accumulators.add(entry)
-
-        resulting = new_by_line[line_id]
-        resolution = ReviewResolution(
-            id=f"{line_id}:R{len(db.reviews.list_for_line(line_id)) + 1}",
-            line_id=line_id,
-            mode=mode,
-            reviewer_id=reviewer_id,
-            note=note,
-            resulting_decision_id=resulting.id,
-            dispute_id=None if target_dispute is None else target_dispute.id,
-            corrections=corrections,
-        )
-        db.reviews.add(resolution)
-        if target_dispute is not None:
-            db.disputes.set_state(target_dispute.id, DisputeState.CLOSED)
-
-        keys = _accumulator_keys_for_claim(working_claim, plan, catalogue)
-        for entry in (*reversals, *posted):
-            keys.add(entry.key)
-        raw = {key: db.accumulators.balance(key) for key in keys}
-        # Reversals and new posts are already in the ledger at this point, so
-        # the closing invariant is the committed balances themselves.
-        _assert_within_limits(
-            plan=plan,
-            consumed_before=raw,
-            deltas=(),
-        )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+            db.commit()
+        except sqlite3.OperationalError as exc:
+            db.rollback()
+            if is_sqlite_lock_error(exc):
+                continue
+            raise
+        except Exception:
+            db.rollback()
+            raise
+        break
 
     refreshed = db.claims.get(original_claim.id)
     assert refreshed is not None
@@ -226,6 +160,117 @@ def resolve_review(
         ),
         resolution=resolution,
     )
+
+
+def _resolve_review_tx(
+    db: SqliteDatabase,
+    *,
+    original_claim: Claim,
+    working_claim: Claim,
+    line_id: str,
+    mode: ReviewResolutionMode,
+    reviewer_id: str,
+    note: str,
+    corrections: LineFactCorrections | None,
+    decided_at: datetime,
+    target_dispute: Dispute | None,
+    closing_line_id: str | None,
+) -> tuple[
+    AdjudicationResult,
+    tuple[LineDecision, ...],
+    dict[str, LineDecision],
+    ReviewResolution,
+]:
+    policy = _load_policy(db, original_claim)
+    plan_version = _original_plan_version(db, original_claim.id)
+    plan = db.plans.get(policy.plan_id, plan_version)
+    if plan is None:
+        raise PlanNotFoundError(
+            f"plan {policy.plan_id} version {plan_version} not found"
+        )
+    catalogue = db.catalogue.as_mapping()
+    to_reverse = _unreversed_original_entries(db, original_claim.id)
+    consumed = _starting_balances(db, working_claim, plan, catalogue, to_reverse)
+    suspected_keys = _load_suspected_duplicate_keys(
+        db, working_claim.member_id, exclude_claim_id=original_claim.id
+    )
+    ctx = AdjudicationContext(
+        policy=policy,
+        plan=plan,
+        catalogue=catalogue,
+        suspected_duplicate_keys=suspected_keys,
+        as_of=original_claim.submitted_at.date(),
+        decided_at=decided_at,
+        accumulator_consumed=consumed,
+    )
+    result = adjudicate(working_claim, ctx)
+    if result.rejected:
+        raise InvalidCorrectionError(original_claim.id)
+
+    current_by_line: dict[str, LineDecision] = {}
+    for line in original_claim.lines:
+        existing = db.decisions.current_for_line(line.id)
+        if existing is None:
+            raise LineNotInReviewError(line_id)
+        current_by_line[line.id] = existing
+    new_decisions, reminted_deltas = _assign_sequences(result, current_by_line)
+    new_by_line = {decision.line_id: decision for decision in new_decisions}
+    old_decision_line = {
+        decision.id: decision.line_id
+        for line in original_claim.lines
+        for decision in db.decisions.list_for_line(line.id)
+    }
+    reversals = tuple(
+        compensating_entry(
+            entry,
+            id=f"{new_by_line[old_decision_line[entry.decision_id]].id}"
+            f":REV:{entry.id}",
+            decision_id=new_by_line[old_decision_line[entry.decision_id]].id,
+        )
+        for entry in to_reverse
+    )
+    posted = _postable_deltas(
+        reminted_deltas,
+        new_by_line=new_by_line,
+        db=db,
+        closing_line_id=closing_line_id,
+    )
+    if corrections is not None:
+        db.claims.update_line_facts(line_id, corrections)
+    for decision in new_decisions:
+        db.decisions.add(decision)
+    for entry in reversals:
+        db.accumulators.add(entry)
+    for entry in posted:
+        db.accumulators.add(entry)
+
+    resulting = new_by_line[line_id]
+    resolution = ReviewResolution(
+        id=f"{line_id}:R{len(db.reviews.list_for_line(line_id)) + 1}",
+        line_id=line_id,
+        mode=mode,
+        reviewer_id=reviewer_id,
+        note=note,
+        resulting_decision_id=resulting.id,
+        dispute_id=None if target_dispute is None else target_dispute.id,
+        corrections=corrections,
+    )
+    db.reviews.add(resolution)
+    if target_dispute is not None:
+        db.disputes.set_state(target_dispute.id, DisputeState.CLOSED)
+
+    keys = _accumulator_keys_for_claim(working_claim, plan, catalogue)
+    for entry in (*reversals, *posted):
+        keys.add(entry.key)
+    raw = {key: db.accumulators.balance(key) for key in keys}
+    # Reversals and new posts are already in the ledger at this point, so
+    # the closing invariant is the committed balances themselves.
+    _assert_within_limits(
+        plan=plan,
+        consumed_before=raw,
+        deltas=(),
+    )
+    return result, new_decisions, new_by_line, resolution
 
 
 def _validate_request(

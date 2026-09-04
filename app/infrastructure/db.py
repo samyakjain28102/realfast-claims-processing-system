@@ -24,6 +24,15 @@ if TYPE_CHECKING:
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BUSY_TIMEOUT_MS = 5000
+SHARED_MEMORY_URI = "file:{name}?mode=memory&cache=shared"
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    """True when SQLite refused a lock (retry by full re-adjudication)."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return "locked" in message or "busy" in message
 
 
 def connect(
@@ -71,10 +80,24 @@ def open_database(
     return SqliteDatabase(connection)
 
 
+def shared_memory_uri(*, name: str = "claims") -> str:
+    """URI for a shared in-memory database (multiple connections, threaded tests)."""
+    return SHARED_MEMORY_URI.format(name=name)
+
+
 def open_shared_memory(*, name: str = "claims") -> SqliteDatabase:
     """In-memory database visible to multiple connections (threaded tests)."""
     return open_database(
-        f"file:{name}?mode=memory&cache=shared",
+        shared_memory_uri(name=name),
+        uri=True,
+        check_same_thread=False,
+    )
+
+
+def connect_shared_memory(*, name: str = "claims") -> SqliteDatabase:
+    """Second connection to an existing shared in-memory database."""
+    return open_database(
+        shared_memory_uri(name=name),
         uri=True,
         check_same_thread=False,
     )
